@@ -1,4 +1,4 @@
-*.log
+﻿*.log
 .DS_Store
 .env
 .env.backup
@@ -31,6 +31,7 @@ Thumbs.db
 *.sqlite-journal
 /database/backups
 /storage/app/private/*
+/storage/crm-demo
 /public/css/filament
 /public/js/filament
 /public/fonts/filament
