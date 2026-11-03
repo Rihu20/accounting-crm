@@ -1,0 +1,2 @@
+@extends('accounting.layout')
+@section('content')<section class="auth"><div class="brand">ANALYSTIP · ACCOUNTS</div><h1>Hello, {{ auth()->user()->name }}.</h1><p>Ask your administrator to assign accounting access to your account.</p><form action="/logout" method="post">@csrf<button>Sign out</button></form></section>@endsection

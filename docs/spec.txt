@@ -1,0 +1,388 @@
+Accounting CRM
+Build Specification for Claude Code
+Laravel | White and red theme | Invoicing, payments, paralegal portal, expenses
+Version: 1.0   |   Date: 27 October 2026   |   Prepared for: Himanshu (Accounts)
+Reference invoice company: AnalystIP Legal Services Pvt. Ltd., Noida, India
+
+
+Part A: How to use this document
+For Himanshu. Follow these steps in order.
+A1. What you need before starting
+A Claude Code subscription, installed as per the official Claude Code documentation.
+A computer with PHP 8.3+, Composer, Node.js 20+, MySQL 8 and Git. On Windows or Mac, Laravel Herd installs most of this in one go.
+This Word file (docs/CRM_BUILD_SPEC.docx).
+CRM_Master_Data.xlsx, the master Excel made in this project (Clients, Matters, Paralegals, Vendors, Lists).
+Company logo (PNG) and authorised signatory signature (PNG, transparent background if possible).
+One sample paralegal Word file in the format given in Section 7 (the CRM will also generate a blank template).
+An Anthropic API key for the vendor-invoice PDF reading feature (Phase 7). Keep it only in the .env file.
+A2. One-time setup commands
+Run these in a terminal (Command Prompt or PowerShell on Windows). The text after # is only a comment.
+composer create-project laravel/laravel accounting-crm
+cd accounting-crm
+git init
+mkdir docs
+# copy this Word file here as   docs/CRM_BUILD_SPEC.docx
+# copy the master Excel here as docs/CRM_Master_Data.xlsx
+claude          # starts Claude Code inside the project folder
+
+A3. First prompt (paste this exactly)
+
+A4. Phase prompts (paste one at a time, after "go")
+After each phase: check the screen yourself, then ask Claude Code to commit. Start the next phase only when the acceptance criteria of the current one pass.
+
+A5. Tips
+To continue later in a new session: "Read CLAUDE.md and docs/CRM_BUILD_SPEC.docx, then continue with Phase N."
+If something breaks, paste the exact error message and say "fix this and add a test so it does not return".
+Never paste passwords, API keys or bank card numbers into prompts. Secrets go only in .env.
+Real client data should be added only after Phase 2 passes and a database backup routine is in place.
+Part B: Specification
+For Claude Code. Build exactly what is described. Where a choice is open, use Section 15.
+1. Product overview
+Accounting CRM is an internal system for an IP services firm in Noida, India. The firm raises invoices to foreign and Indian clients for patent matters (office action responses, filings, translations). Paralegals who do the underlying work send matter details in Word files. The CRM turns those files into proforma invoices, tracks payment, issues tax invoices after payment, organises documents in cloud storage, and records business expenses.
+Core flow
+Paralegal uploads Word file (Ref No + fees)
+  -> CRM reads matter details from the Matter Master and creates a PROFORMA invoice (draft)
+  -> Admin reviews and sends the proforma
+  -> Payment received: an authorised approver marks it Received
+  -> Admin gets a notification "Tax invoice due" -> Admin clicks Order
+  -> TAX invoice generated, PDF saved to cloud folder, paralegal notified
+  -> Paralegal places completed work documents in the same folder
+  -> Proforma unpaid for 15 days: paralegal gets follow-up reminders
+
+Other capabilities
+Multi-currency (USD, INR, EUR). One invoice is always in one currency; conversion between currencies is supported.
+Multiple banks (Deutsche Bank: USD, INR, EUR; ICICI: INR, USD) and gateways (PayPal, Skydo, Razorpay).
+Expense tracking: vendor invoices (foreign law firms and Indian vendors) and owner-paid expenses, each with payment status.
+Paralegals get a restricted portal. Owners get a quick expense entry form.
+2. Technology stack
+
+If a different package is clearly better for a requirement, explain in two lines and ask before switching.
+3. Theme and UI
+The whole product uses a clean white and red theme: neat, airy, professional. White backgrounds, red used sparingly for primary actions and key accents.
+
+Font: Inter (fallback system sans). Rounded corners 8px, no heavy shadows, generous white space.
+Tables: sticky header, filters above, compact rows, status shown as small badges (Pending amber, Received/Paid green, Overdue dark red, Draft grey).
+Desktop sidebar (admin panel): Dashboard, Clients, Matters, Invoices (Proforma, Tax), Payments, Expenses, Documents, Paralegals, Vendors, Reports, Settings.
+Portal sidebar (paralegal): My Matters, My Proformas, My Invoices, Upload Word File, Documents, Notifications.
+Fully responsive. The owner quick-add expense form and the Payments tracker must work well on a phone.
+Dates in the UI: DD.MM.YYYY. Currency shown with symbol and code; INR uses Indian digit grouping (1,40,000.00), USD and EUR use international grouping.
+Login page: white card, logo, red button. Logo uploaded in Settings.
+4. Roles and permissions
+
+The permission payments.mark_received is assignable by Admin to exactly the approvers. The "Mark as Received" button must not render for anyone without it, and the server must also enforce it.
+Every permission change and every payment status change is audit-logged (who, when, old value, new value).
+5. Masters and Excel import
+5.1 Clients
+Fields: name (unique), client_type (Foreign or Indian), country, state (for Indian clients), contact_person, email_1, email_2, phone, address, gstin (Indian clients), default_currency, notes. New clients can be added directly in the CRM at any time.
+5.2 Matters (Matter Master)
+One row per Ref No. The Ref No is a unique 4-digit code (e.g. 4521) stored as a string to keep leading zeros. Validate with ^\d{4}$, but make the DB column length 6 so the format can grow later.
+
+5.3 Paralegals and Vendors
+Paralegals: name, email, phone, firm. Each paralegal also has a user account (role Paralegal) for the portal.
+Vendors: name, type (Foreign or Indian), country, email, GSTIN or tax ID, default currency, notes. Used by the Expenses module.
+5.4 Excel import (docs/CRM_Master_Data.xlsx)
+Header row is row 1 on every sheet. Import via a Filament page with a preview step (counts of new, updated, rejected rows), then commit, then a downloadable error report. Import is idempotent (upsert).
+
+Skip fully blank rows and any row whose Ref No is 0000 (the example row).
+Reject a Matters row if: Ref No is not 4 digits, Client Name does not exist, Service Type is invalid, or Paralegal does not exist (clear error message with sheet and row number).
+Import Clients and Paralegals before Matters in the same run.
+Read Ref No, App No and PCT No as text so nothing is converted to numbers or dates.
+6. Invoice specification
+6.1 Document types and numbering
+Proforma Invoice (created from a Word upload or manually) and Tax Invoice (created only when Admin orders it after payment is received).
+Tax invoice number format: AIP + YY + SEQ where SEQ is a zero-padded running sequence, e.g. AIP250196. Proforma format: PI + YY + SEQ. Prefix, year logic and padding are configurable in Settings (see Section 15).
+Numbers are issued only on finalising (not for drafts) using a number_sequences table with a row lock inside a transaction, so two users can never get the same number. Numbers are never reused.
+A tax invoice stores proforma_id; the proforma becomes status Converted.
+6.2 Line items
+Each invoice has items of these types: official_fee, professional_fee, translation, disbursement. In the PDF the body is grouped under bold headings (Official Fees, Professional Fees, Translation). Header and footer are always identical; only the body changes.
+
+Each item has: sac_code (default 998213, editable per item), qty (default 1.00), rate, amount = qty x rate. Omit description lines that are empty (e.g. no Your ref).
+6.3 Tax rules
+Foreign client: no GST. The "Taxes/GSTIN" line in the totals block prints "-".
+Indian client: GST 18% applies on Professional Fees only (rate configurable). Official fees and disbursements are not taxed by default (item flag taxable can override).
+For Indian clients: if the client's state equals the company state (Uttar Pradesh) show CGST 9% + SGST 9%; otherwise show IGST 18%.
+Totals: subtotal (all fee items) + disbursement + tax = Total Payable Amount.
+6.4 Currency and conversion
+Currencies: USD, INR, EUR. One invoice = one currency.
+Sometimes a fee arrives in one currency and the client must be billed in another (e.g. USD to INR, or EUR to USD). Provide a "Convert currency" action on a draft invoice: choose target currency, enter the rate, rate date and rate source (RBI reference rate, Bank rate or Manual).
+On conversion, recompute every item amount in the target currency (2 decimals, half-up) and store the original in invoice_conversions (source currency, source amount, target currency, rate, rate_date, rate_source, converted amount, user, timestamp). The original is never lost.
+Phase 1: rate entered manually. Later (optional): daily rate import. Keep the rate source pluggable.
+Optional toggle per invoice: print a small line "Exchange rate applied: 1 USD = X INR (date)". Default off.
+6.5 Banks and gateways
+Bank accounts table seeded with: Deutsche Bank (USD, INR, EUR) and ICICI Bank (INR, USD). Admin fills missing account details in Settings. Do not hardcode bank details in code or templates.
+On choosing the invoice currency, auto-select the default active bank account for that currency; Admin may override.
+Payment gateways: PayPal, Skydo, Razorpay. Optional on an invoice; when selected, print the gateway name and payment instructions (free text in Settings) below the bank block.
+6.6 PDF layout (A4 portrait, matches the reference invoice)
+Whole page inside a thin outer border. Top right, small italic: "Original Copy for Recipient".
+Header row: company logo (red, uploaded in Settings) on the left; on the right a large grey title "Tax Invoice" (or "Proforma Invoice") with below it: Invoice No., Invoice Date (format "October 08, 2025"), Due Date, Payment Term (e.g. "15 Days").
+Two-column block. Left (From): company name in bold caps, Address, GSTIN No., Email Id, M (mobile) and L (landline). Right (Invoice To): "Attn: <contact person>", client name, Address, Email(s) joined with " | ", Contact No.
+Main table, columns: S.N | Description of Service | Country | SAC Code | Price | Unit | Total (<CUR> <symbol>), e.g. "Total (USD $)". Grey header row. Fee-type group headings, then items numbered 1, 2, 3...
+Totals block right-aligned under the table: Taxes/GSTIN (shows "-" for foreign clients), Disbursement, and a shaded bold Total Payable Amount, each with the currency symbol.
+Amount in Words line, bold, underlined, e.g. "USD $ One Thousand Four Hundred Twenty Only". For INR use "Rupees ... Only"; for EUR "EUR € ... Only".
+Bank block titled "Pay Through Bank Transfer/Wire Transfer" (underlined): Beneficiary Name, Beneficiary Address, Bank Account/IBAN No, Bank Swift/BIC Code, Bank IFSC Code, Bank Name, Bank Address, taken from the selected bank account.
+Terms and Conditions (text editable in Settings) on the left and, on the right, the signature image above "For <Company> / Authorised Signatory".
+Centered bottom line in bold: "THIS IS COMPUTER GENERATED INVOICE".
+6.7 Multi-page invoices
+When items overflow the first page: repeat the table header row on every page; at the end of each non-final page print a "Carried Forward" row with the running subtotal; at the top of the next page print "Brought Forward" with the same value. Continuation pages carry a compact header (invoice no., page x of y).
+The footer block (totals, amount in words, bank details, terms, signature, "computer generated" line) appears only on the last page. Do not use fixed-position footers; place the block in normal flow after the last item.
+Page numbers "Page x of y" on every page. No item row may split across pages.
+Test with 1, 8, 25 and 60 items.
+6.8 Reference data (seed + test fixture)
+Read from the sample tax invoice. Verify every value against company records before going live; all of it must live in Settings and bank accounts, not in code.
+
+7. Paralegal Word upload
+Paralegals (or Admin) upload a Word file. The CRM reads it, looks up each Ref No in the Matter Master, and creates a draft proforma invoice. Nothing is ever sent automatically.
+Word file format (the CRM must also offer a "Download blank Word template" button). The table below is shown as plain text; in Word it is a real table.
+Paralegal: Seema
+Date: 27.10.26
+ 
+Ref No | Fee Type          | Matter / Action         | Language | Amount | Currency
+4521   | Official Fees     | Office Action Response  |          | 1400   | USD
+4521   | Professional Fees | Office Action Response  |          | 800    | USD
+4533   | Translation       | Specification Transl.   | Japanese | 650    | USD
+4533   | Disbursement      | Courier                 |          | 20     | USD
+
+Parsing and validation rules
+The file contains one table with these exact header cells: Ref No, Fee Type, Matter / Action, Language, Amount, Currency. Wrong or missing headers reject the file with a clear message.
+Ref No: exactly 4 digits and must exist in the Matter Master. Fee Type: only Official Fees, Professional Fees, Translation, Disbursement. Amount: number only (no symbol or comma). Currency: USD, INR or EUR. Language: only on Translation rows.
+One file = one client and one currency. If Ref Nos belong to different clients, or currencies differ, reject with a warning listing the conflicts.
+Paralegal identity: if the uploader is a paralegal, use that account. Otherwise read the "Paralegal:" line and match it to the Paralegals master. If both exist and differ, warn.
+Validate every row and show row-wise errors. If any row is invalid, create nothing until the user fixes the file, or lets Admin choose "create from valid rows only".
+App No, PCT No, Country, Our ref, Your ref, client name and address are not in the Word file; they come from the Matter Master. The Word "Matter / Action" text overrides the matter title in the description.
+Store the original .docx in cloud storage and a word_uploads record (uploader, paralegal, status, parse result as JSON). Allow .docx only, max 10 MB.
+On success: create a draft proforma (items grouped by fee type), notify Admin, open the review screen. Admin may edit items, convert currency, pick bank, then Send.
+8. Payment workflow and tracker
+8.1 Statuses
+
+8.2 Marking payment received
+Only users with payments.mark_received see and can use "Mark as Received". Dialog fields: received_on, amount received, currency, bank account or gateway, transaction reference, charges deducted (bank/gateway fee), notes.
+Partial payments are allowed (status Partially received). The tax invoice can be ordered once the proforma is fully received.
+Reverting Received to Pending is Admin only and requires a reason. All changes are audit-logged.
+8.3 Ordering the tax invoice
+When a proforma becomes Received, notify Admin (in-app and email): "Payment received for <proforma no> (<client>, <amount>). Tax invoice due." with an Order Tax Invoice button.
+Admin clicks Order. A confirmation shows the invoice date (default today, editable) and the items (editable before confirming).
+On confirm: issue the tax invoice number, link proforma_id, mark the proforma Converted, generate the PDF, run the folder service (Section 10), notify the paralegal.
+8.4 Payment Tracker page
+
+Filters: paralegal, client, status, currency, date range, "15+ days overdue". Totals row per currency. Export to Excel.
+9. Notifications and scheduled jobs
+The CRM sends notifications (Claude does not). Use Laravel Notifications with database + mail channels. Each notification links to the relevant record.
+
+A scheduled command crm:daily-checks runs the date-based checks. It must be idempotent (no duplicate notifications for the same event on the same day).
+10. Cloud storage and folder automation
+10.1 Folder structure
+/Paralegals/
+  Seema/                      <- paralegal folder, created ONCE
+    1101/                     <- Ref No folder, created only if it does not exist
+      01.01.26/               <- date folder = TAX INVOICE date (DD.MM.YY)
+        AIP260001.pdf         <- tax invoice, placed by the CRM
+        (paralegal uploads completed work documents here)
+/Proformas/<Paralegal>/<ProformaNo>.pdf     <- proforma PDFs
+/Uploads/Word/<YYYY-MM>/<file>.docx        <- original Word uploads
+/Expenses/<YYYY-MM>/<file>                 <- vendor invoices and owner bills
+
+10.2 FolderService::ensureForTaxInvoice(invoice)
+For each Ref No on the invoice, find the matter's paralegal.
+Ensure the paralegal folder exists; create if missing (one-time).
+Ensure the Ref No folder exists inside it; create only if it does not exist.
+Create the date folder named with the tax invoice date as DD.MM.YY inside the Ref No folder (reuse if it already exists, e.g. two invoices on the same day).
+Save the tax invoice PDF in that date folder. Record the folder in storage_folders and the file in documents.
+If an invoice contains several Ref Nos, place a copy of the PDF in each Ref No folder (and under each paralegal involved).
+Notify the paralegal on the tax invoice date: invoice number, date, folder link, and a reminder to upload completed work.
+10.3 Paralegal access
+Paralegals upload work documents through the portal into their own date folders. They can see only folders of their own matters.
+Allowed types: pdf, docx, xlsx, jpg, png, zip. Max 25 MB. Files are private; use temporary signed URLs for download.
+Optional setting (default off): also share the Drive folder with the paralegal's Google account.
+The disk is configured in .env so the same code works with Google Drive, S3-compatible storage or local disk.
+11. Expenses module
+Two expense types share one table and one list page, with a type filter.
+11.1 Vendor invoice expense (foreign law firm or Indian vendor)
+Admin uploads the vendor's PDF invoice. A queued job sends the PDF to the Anthropic API and asks for JSON: vendor name, invoice no, invoice date, due date, currency, amount, tax amount, description, any Ref No found.
+The extracted values pre-fill a review form. Admin checks and confirms. Never auto-save extracted data. Manual entry must always work too.
+Match the vendor to the Vendors master (offer to create a new vendor if none matches).
+Fields: vendor, vendor invoice no, invoice date, due date, currency, amount, optional GST amount (Indian vendors), optional Ref No (for matter-wise cost), category, PDF.
+Status: Unpaid or Paid. When paid: paid_on, amount paid, paid from (bank account, gateway or card label), transaction reference.
+Foreign vendor payments (optional section): requires_15ca_cb flag, form status, TDS applicable, TDS amount.
+11.2 Owner expense (credit card, personal money or cash)
+Owners use a quick-add form (30 seconds, mobile friendly): date, amount, currency, category (Travel, Software, Courier, Government fees, Office, Other), paid_by (Owner credit card, Owner personal, Cash), card label, optional Ref No, bill photo or PDF, note.
+Card label only (e.g. "HDFC CC"). Never store card numbers.
+Reimbursement status: Pending, Reimbursed, Not reimbursable. Marking Reimbursed records the date and bank reference.
+Owners see only their own entries. Admin sees all.
+11.3 Paid-by values
+
+11.4 Reports
+Unpaid vendor invoices (with due dates and overdue highlight).
+Total owed to owners (pending reimbursement), per owner.
+Matter-wise: revenue invoiced vs vendor cost by Ref No.
+Expenses by category and month.
+12. Database summary
+Create migrations with foreign keys and indexes. Every table has created_at and updated_at. Soft-delete masters; never hard-delete issued invoices.
+
+13. Build phases and acceptance criteria
+
+14. Rules for CLAUDE.md (copy into the project root)
+# Accounting CRM - rules
+- Spec: docs/CRM_BUILD_SPEC.docx. Follow it; use Section 15 defaults for open items.
+- Stack: Laravel, Filament (admin + portal panels), MySQL, Pest tests.
+- Theme: clean white and red. Tokens in Section 3. Neat, airy, minimal.
+- Money: DECIMAL(14,2) + bcmath only. Round half-up to 2 decimals per line.
+- Ref No: unique 4-digit string, validated ^\d{4}$, column length 6.
+- One invoice = one currency. Conversions stored in invoice_conversions.
+- GST: only Professional Fees for Indian clients (18%); CGST+SGST if client state = UP, else IGST. Foreign: no tax, print "-".
+- Proforma first; tax invoice only when Admin orders it after payment is Received.
+- Only users with payments.mark_received can mark payment received (UI and server).
+- Invoice PDF: footer block only on last page; carried/brought forward totals between pages.
+- Storage folders: /Paralegals/<name>/<ref_no>/<DD.MM.YY>/ ; create only missing folders.
+- Word upload: one file = one client + one currency; validate row-wise; draft only, never auto-send.
+- AI extraction output is always reviewed by Admin before saving.
+- Never store card numbers; card label only. Secrets only in .env.
+- Audit-log every money, status and permission change.
+- Every business rule has a test. Run the tests before each commit. Small commits per feature.
+
+15. Open decisions and defaults
+Use these defaults unless Himanshu changes them. Each should be a setting where practical.
+
+End of specification.
+HOW THIS DOCUMENT IS ORGANISED
+Part A is for Himanshu: the exact commands and prompts to paste into Claude Code, in order.
+Part B is for Claude Code: the full specification (modules, rules, invoice layout, database, build phases, acceptance criteria).
+Everything needed to build the CRM is inside this file. The sample invoice has been described in text in Section 6, so the invoice image does not need to be attached again.
+PROMPT 0: START
+You are building a production-quality Laravel application called Accounting CRM. The complete specification is in docs/CRM_BUILD_SPEC.docx. If you cannot read .docx directly, convert it to Markdown with pandoc first and read the Markdown.
+Read the whole document, including Section 14 (rules) and Section 15 (open decisions and defaults). Then do three things: (1) create CLAUDE.md in the project root from Section 14, (2) show me a short build plan for the 8 phases in Section 13, (3) wait for my "go" before writing any application code.
+Ask me questions only if something blocks you. Otherwise use the defaults in Section 15.
+Phase | Prompt to paste
+1. Foundation | Build Phase 1 from Section 13: project setup, white and red theme, authentication, roles and permissions, settings (company profile, terms, numbering), bank accounts and payment gateways. Meet the acceptance criteria, write tests, run them, then commit.
+2. Masters + Excel import | Build Phase 2: Clients, Matters (4-digit Ref No), Paralegals, Vendors, and the Excel import using docs/CRM_Master_Data.xlsx exactly as described in Section 5. Include preview, error report and tests. Commit when passing.
+3. Invoice engine + PDF | Build Phase 3: invoice engine (proforma and tax), items grouped by fee type, GST rules, multi-currency conversion, amount in words, and the PDF layout from Section 6 including carry-forward and footer only on the last page. Reproduce reference invoice AIP250196 as a test. Commit when passing.
+4. Word upload | Build Phase 4: Word template download, Word upload and parsing (Section 7), row-wise validation, draft proforma creation and the review screen. Add tests with valid and invalid files. Commit when passing.
+5. Payments + tax invoice | Build Phase 5: Payment Tracker, restricted Mark as Received, notifications to Himanshu, the Order Tax Invoice action, proforma-to-tax linking and audit log (Sections 8 and 9). Commit when passing.
+6. Storage + paralegal portal | Build Phase 6: cloud folder automation (Section 10), the paralegal portal, document uploads, tax-invoice notifications to the paralegal and the 15-day proforma follow-up scheduler. Add tests for the folder service and the scheduler. Commit when passing.
+7. Expenses | Build Phase 7: Expenses module (Section 11): vendor invoice PDF upload with Anthropic API extraction and admin review, owner quick-add expenses, paid-by and reimbursement tracking, unpaid lists. Mock the API in tests. Commit when passing.
+8. Dashboard + polish | Build Phase 8: dashboard, reports, global search by Ref No, UI polish for the white and red theme, README with deployment and backup notes, and a full test run. Fix anything failing and commit.
+Area | Choice
+Framework | Laravel (latest stable), PHP 8.3+, MySQL 8, queue driver = database, Laravel scheduler (timezone Asia/Kolkata).
+UI | Filament (latest stable) with Livewire and Tailwind. Two panels: "admin" (Admin, Approvers, Owners) and "portal" (Paralegals).
+Auth and roles | Filament auth, spatie/laravel-permission for roles and permissions.
+Audit trail | spatie/laravel-activitylog on all money, status and permission changes.
+Excel import | maatwebsite/excel.
+Word parsing | phpoffice/phpword (read the table in the .docx).
+PDF | Preferred: spatie/laravel-pdf (Chromium via Browsershot) for reliable CSS print layout. Fallback: barryvdh/laravel-dompdf with server-side page chunking. Choose one and document why.
+Cloud storage | Laravel Filesystem (Flysystem) with a configurable disk named crm. Default Google Drive adapter; S3-compatible also supported through .env. Local disk in development.
+Notifications | Laravel Notifications: database (in-app bell) and mail. WhatsApp is a later phase; keep the channel layer pluggable.
+AI extraction | Anthropic Messages API called server-side with a PDF document input. Key and model name from .env (ANTHROPIC_API_KEY, ANTHROPIC_MODEL); never hardcode.
+Money | DECIMAL(14,2) columns and bcmath. Never use floats for amounts. Rounding: 2 decimals, half-up, per line.
+Testing | Pest. Feature tests for every business rule listed in this document.
+Token | Value | Use
+Primary red | #C62828 | Primary buttons, active menu marker, links, key accents
+Primary dark | #8E1B1B | Hover, headings accent, overdue emphasis
+Red tint | #FDECEC | Selected rows, callouts, subtle highlights
+Background | #FFFFFF | Page and cards
+Surface | #F9FAFB | Sidebar, table zebra, inputs
+Border | #E5E7EB | Dividers and card borders
+Text / muted | #111827 / #6B7280 | Body text / secondary text
+Success | #15803D | Received, Paid
+Warning | #B45309 | Pending, Draft
+Danger | #991B1B on #FDECEC | Overdue, errors
+Role | Can do | Cannot do
+Admin (Himanshu) | Everything: masters, imports, invoices, ordering tax invoices, settings, users, expense review, reports. | n/a
+Payment Approver (exactly 2 users; names to be given later) | View invoices and the Payment Tracker. Change payment status from Pending to Received (permission payments.mark_received). | Edit masters, settings or expenses.
+Owner | Add and edit their own expenses (quick-add form), see their own reimbursement status. | See other owners' expenses (unless Admin), mark payments, edit masters.
+Paralegal | Portal only: upload Word files, see their own matters, proformas and tax invoices including amounts, upload work documents into their own folders, read notifications. | See other paralegals' data, edit masters, see expenses or payment marking.
+Field | Notes
+ref_no | Unique, 4 digits. The key used on invoices and in the Word upload.
+client_id | Required.
+our_ref | Docket number printed on the invoice as "Our ref" (e.g. P23110203JP). If empty, print the 4-digit ref_no.
+your_ref | Client's own reference (optional).
+matter_title | e.g. Office Action Response Filing.
+country | Jurisdiction, e.g. Japan.
+app_no, pct_no | Application number and PCT number, stored exactly as written.
+service_type | Official Fees, Professional Fees or Translation (default for the matter).
+language | For translation matters.
+paralegal_id | The paralegal who handles this matter. Drives folder location and notifications.
+status | Active, Closed, On Hold.
+Sheet | Columns (exact headers) | Upsert key
+Clients | Client Name | Client Type | Country | State (India) | Contact Person | Email 1 | Email 2 | Phone | Address | GSTIN (India) | Default Currency | Notes | Client Name
+Matters | Ref No | Client Name | Our Ref (Docket No) | Your Ref | Matter Title | Country | App No | PCT No | Service Type | Language | Paralegal | Status | Ref No
+Paralegals | Paralegal Name | Email | Phone | Firm / Company | Email, else Name
+Vendors | Vendor Name | Vendor Type | Country | Email | GSTIN / Tax ID | Default Currency | Notes | Vendor Name
+Lists | Dropdown values only. Do not import. | n/a
+Read Me | Instructions only. Do not import. | n/a
+Item type | Description lines printed | Notes
+Official Fees | Matter / action | Country App No. | PCT App No. | Our ref | Your ref | Government / office fees.
+Professional Fees | Matter / action | App No. | PCT App No. | Our ref | Your ref | This is the only taxable type for Indian clients.
+Translation | Matter / action | Language | App No. | PCT App No. | Our ref | Your ref | Language printed on its own line.
+Disbursement | Free text (e.g. courier) | Shown in the totals block, not in the main table.
+Item | Value
+Company | ANALYSTIP LEGAL SERVICES PVT LTD, Plot No C-116, Sector 2, Noida, Uttar Pradesh, 201301, India
+GSTIN | 09ABBCA7682H1ZD
+Email / phones | accounting@analystip.com | M: +91 9117831863 | L: +120-4374415
+Deutsche Bank (USD) | Beneficiary: ANALYSTIP LEGAL SERVICES PVT LTD; Beneficiary address: Plot No C-116, Block C, Sector 2, Noida, Uttar Pradesh, 201301, India; Account/IBAN: 000041632190019; SWIFT/BIC: DEUTINBBPBC; IFSC: DEUT0278PBC; Bank: Deutsche Bank AG; Bank address: K-2, Somdutt Towers 3rd Floor, Sector 18, Noida, Uttar Pradesh 201301, India
+Terms (default) | 1. Remitter pays all foreign bank charges by choosing ("OUR") so we receive the full amount.   2. This invoice reflects the actual invoice amount as mutually agreed service fees.
+Test invoice | No. AIP250196, date October 08, 2025, due October 23, 2025, term 15 Days. Client: Attn GARDINER, Samantha Rene, 50 Route de Versailles 78430 Louveciennes France. Item: Office Action Response Filing, Country Japan, App No 2023-573492, PCT App No PCT/EP2022/053856, Our ref P23110203JP, SAC 998213, price 1400.00, unit 1.00, total 1,400.00. Taxes "-", Disbursement 20.00, Total Payable USD 1,420.00, in words "USD $ One Thousand Four Hundred Twenty Only".
+Document | Statuses
+Proforma | Draft, Sent (payment pending), Partially received, Received, Converted (tax invoice issued), Cancelled
+Tax invoice | Issued, Cancelled
+Column | Notes
+Invoice No / Type | Proforma or Tax; link to PDF
+Ref No(s), Client | Click-through to the matter
+Paralegal | Who sent the matter
+Amount + Currency | Invoice total
+Invoice date, Pending days | Pending days counted from the proforma sent date
+Status | Badge. More than 15 days pending = Overdue (dark red)
+Received on, Marked by | Filled when received
+Event | Recipient | When
+Word file uploaded, draft proforma created | Admin | Immediately
+Proforma sent | Paralegal (info) | On send
+Payment marked received | Admin (with Order button) | Immediately
+Tax invoice generated | Paralegal of that matter | Same day: states invoice date and folder link
+Proforma unpaid for 15+ days | Paralegal (follow up) and Admin copy | Daily check at 09:00 IST; repeat every 7 days until paid (configurable)
+Vendor expense due in 3 days / overdue | Admin | Daily check
+Owner expense pending reimbursement for 30+ days | Admin | Weekly digest
+paid_by | Meaning | Status flow
+company_bank | Paid from a company bank account | Unpaid -> Paid
+owner_card | Owner's credit card | Paid by owner -> Reimbursed / Not reimbursable
+owner_personal | Owner's own money | Paid by owner -> Reimbursed / Not reimbursable
+cash | Cash | Paid by owner -> Reimbursed / Not reimbursable
+Table | Key columns
+users | name, email, phone, is_active (roles via permission package)
+settings | key, value (company profile, terms, numbering, thresholds, gateway text)
+number_sequences | series, year_key, last_number (row-locked)
+bank_accounts | bank_name, beneficiary_name, beneficiary_address, account_no, swift, ifsc, bank_address, currency, is_default, is_active
+payment_gateways | name, instructions, is_active
+clients | name, client_type, country, state, contact_person, email_1, email_2, phone, address, gstin, default_currency, notes
+paralegals | user_id, name, email, phone, firm
+matters | ref_no (string 6, unique), client_id, our_ref, your_ref, matter_title, country, app_no, pct_no, service_type, language, paralegal_id, status
+vendors | name, vendor_type, country, email, tax_id, default_currency, notes
+word_uploads | file_path, uploaded_by, paralegal_id, client_id, status, parse_result (json)
+invoices | doc_type (proforma|tax), number, client_id, paralegal_id, word_upload_id, proforma_id, invoice_date, due_date, payment_term_days, currency, bank_account_id, gateway_id, subtotal, disbursement_total, tax_total, grand_total, amount_in_words, status, payment_status, received_on, sent_at, pdf_path, created_by
+invoice_items | invoice_id, matter_id, ref_no, fee_type, matter_text, country, app_no, pct_no, our_ref, your_ref, language, sac_code, qty, rate, amount, taxable, tax_rate, sort_order
+invoice_conversions | invoice_id, source_currency, source_amount, target_currency, rate, rate_date, rate_source, converted_amount, user_id
+payments | invoice_id, amount, currency, bank_account_id, gateway_id, txn_ref, received_on, charges_deducted, marked_by, notes
+storage_folders | paralegal_id, ref_no, folder_date, storage_path
+documents | matter_id, invoice_id, storage_folder_id, type, path, uploaded_by
+expenses | expense_type, vendor_id, vendor_invoice_no, invoice_date, due_date, currency, amount, gst_amount, ref_no, category, paid_by, paid_by_user_id, card_label, status, paid_on, paid_ref, reimbursement_status, reimbursed_on, reimbursed_ref, requires_15ca_cb, tds_amount, bill_path, extraction_json
+laravel tables | notifications, jobs, failed_jobs, activity_log, permission tables
+Phase | Scope | Acceptance criteria
+1 Foundation | Laravel + Filament install, white/red theme, auth, two panels, roles (Admin, Payment Approver, Owner, Paralegal), settings, company profile, bank accounts, gateways, audit log. | App boots; login works; theme matches Section 3; roles seeded; settings editable; bank accounts seeded; tests pass.
+2 Masters + import | Clients, Matters, Paralegals, Vendors CRUD; Excel import per Section 5.4. | docs/CRM_Master_Data.xlsx imports with preview and error report; Ref No validation; re-import updates, not duplicates.
+3 Invoice engine | Invoices by Ref No lookup, items by type, tax rules, conversion, amount in words, PDF, multi-page. | Reference invoice AIP250196 reproduces (total USD 1,420.00); India GST cases correct; carry-forward and last-page-only footer verified with 1, 8, 25, 60 items.
+4 Word upload | Template download, upload, parse, validate, draft proforma, review screen. | Valid file creates correct draft; each invalid case gives row-wise error; mixed client or currency rejected.
+5 Payments + tax invoice | Tracker, restricted mark received, notifications, Order Tax Invoice, proforma-to-tax link. | Only permitted users can mark received (UI and server); Admin notified; ordering issues a unique number; audit entries exist.
+6 Storage + portal | Folder service, paralegal portal, uploads, notifications, 15-day follow-up. | Folder path matches Section 10 and is not recreated; paralegal sees only own data; reminders sent once per cycle.
+7 Expenses | Vendor invoice with AI extraction + review, owner quick-add, paid-by and reimbursement, reports. | Extraction never auto-saves; owed-to-owner total correct; owners see only their own entries.
+8 Dashboard + polish | Dashboard widgets, reports, global search by Ref No, polish, README, deployment and backup notes. | Full test suite green; mobile checks for Payments and quick-add; README complete.
+Topic | Default to implement | Status
+Paralegal visibility of amounts | Paralegals see invoice amounts and all invoice details for their own matters. | Confirmed
+Exchange rate source | RBI reference rate or bank rate, entered manually with date and source. Auto-import later. | Confirmed source; auto-import later
+Our ref on invoice | Print matters.our_ref (docket no); if empty, print the 4-digit Ref No. | Assumption: confirm
+Invoice number format | AIP + 2-digit year + zero-padded sequence (AIP250196). Reset logic (calendar or financial year) in Settings. | Confirm calendar vs financial year and padding
+Proforma numbering | Separate series PI + year + sequence. | Assumption
+Payment approvers | Exactly two users hold payments.mark_received. Seed placeholder users; names to be supplied. | Pending names
+GST input credit (ITC) on vendor invoices | Not tracked. An optional GST amount field is stored on the expense. | Pending decision
+Owner expense reimbursement | Each owner expense has reimbursement_status (Pending, Reimbursed, Not reimbursable); default Pending. | Pending decision
+Follow-up cadence | First reminder when a proforma is 15 days unpaid, then every 7 days. Configurable. | Assumption
+Partial payments | Allowed; tax invoice orderable when fully received. | Assumption
+Cloud storage provider | Google Drive via Flysystem; S3-compatible supported via .env. | Assumption: confirm provider
+Notification channels | In-app and email now; WhatsApp later. | Assumption
+Foreign remittance fields (15CA/CB, TDS) | Optional section on foreign vendor expenses. | Assumption
