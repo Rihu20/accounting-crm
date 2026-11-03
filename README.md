@@ -30,6 +30,10 @@ Create users in Settings → Users and pick one of the four roles. Set the LUT A
 4. Approvers record partial or full payments. Received proformas expose Order Tax Invoice to Admin. PDF, matter folders and notifications are generated.
 5. Record vendor invoices or owner expenses. Owners see their own expenses. Admin records vendor payments and owner reimbursements.
 
+## Reports
+
+Accountant and Director see Reports. GSTR-1 working downloads as a month workbook. Receivables ageing buckets every unpaid proforma, payables ageing buckets every unpaid vendor bill by its due date (the bill date when none is set) and shows what is not yet due. The TDS register covers a date range – the current financial year by default – with TDS deducted by clients on receipts to tally against Form 26AS, TDS deducted by us on vendor bills per section, and a summary sheet. A client statement of account lists every proforma, receipt, TDS credit, write-off and credit / debit note for one client with a running balance, one sheet per currency. Amounts are never added across currencies.
+
 ## Local defaults and production setup
 
 The included local app uses SQLite because this computer has no MySQL server. Migrations also target MySQL 8. For shared deployment, set DB_CONNECTION=mysql and DB_HOST, DB_DATABASE, DB_USERNAME and DB_PASSWORD in `.env`; run `php artisan migrate --seed`. Do not copy a live SQLite database into MySQL. Use HTTPS, APP_ENV=production, APP_DEBUG=false, a unique APP_KEY, and your own administrator credentials. Point the web server only at `public/`. The local web server is for this computer only.

@@ -3,16 +3,19 @@
 namespace App\Http\Controllers;
 
 use App\Exports\RowsExport;
+use App\Exports\SheetsExport;
+use App\Models\Client;
 use App\Models\Document;
 use App\Models\Invoice;
 use App\Models\InvoiceNote;
-use App\Services\NoteService;
 use App\Models\StorageFolder;
 use App\Models\WordUpload;
 use App\Services\InvoiceService;
 use App\Services\MasterImportService;
+use App\Services\NoteService;
 use App\Services\NotifyService;
 use App\Services\PdfService;
+use App\Services\ReportService;
 use App\Services\WordService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -153,19 +156,45 @@ class CrmController extends Controller
         return response($s->render($note), 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="'.$note->number.'.pdf"']);
     }
 
-    public function gstr1(Request $r, \App\Services\ReportService $reports)
+    public function gstr1(Request $r, ReportService $reports)
     {
         abort_unless(auth()->user()->allowed('accounting.reports.view'), 403);
         $month = $r->validate(['month' => ['required', 'regex:/^\d{4}-\d{2}$/']])['month'];
 
-        return Excel::download(new \App\Exports\SheetsExport($reports->gstr1($month)), 'GSTR1_Working_'.$month.'.xlsx');
+        return Excel::download(new SheetsExport($reports->gstr1($month)), 'GSTR1_Working_'.$month.'.xlsx');
     }
 
-    public function ageing(\App\Services\ReportService $reports)
+    public function ageing(ReportService $reports)
     {
         abort_unless(auth()->user()->allowed('accounting.reports.view'), 403);
 
         return Excel::download(new RowsExport($reports->ageingRows()), 'Receivables_Ageing_'.today()->format('Y-m-d').'.xlsx');
+    }
+
+    public function payablesAgeing(ReportService $reports)
+    {
+        abort_unless(auth()->user()->allowed('accounting.reports.view'), 403);
+
+        return Excel::download(new RowsExport($reports->payablesAgeingRows()), 'Payables_Ageing_'.today()->format('Y-m-d').'.xlsx');
+    }
+
+    public function tds(Request $r, ReportService $reports)
+    {
+        abort_unless(auth()->user()->allowed('accounting.reports.view'), 403);
+        [$start, $end] = ReportService::financialYear();
+        $data = $r->validate(['from' => 'nullable|date', 'to' => 'nullable|date|after_or_equal:from']);
+        $from = $data['from'] ?? $start->toDateString();
+        $to = $data['to'] ?? $end->toDateString();
+
+        return Excel::download(new SheetsExport($reports->tds($from, $to)), 'TDS_Register_'.$from.'_to_'.$to.'.xlsx');
+    }
+
+    public function statement(Request $r, ReportService $reports)
+    {
+        abort_unless(auth()->user()->allowed('accounting.reports.view'), 403);
+        $client = Client::findOrFail($r->validate(['client' => 'required|integer'])['client']);
+
+        return Excel::download(new SheetsExport($reports->clientStatement($client)), 'Statement_'.str($client->name)->slug().'_'.today()->format('Y-m-d').'.xlsx');
     }
 
     public function documentUpload(Request $r)

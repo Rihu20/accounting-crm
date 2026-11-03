@@ -36,6 +36,9 @@ Route::middleware(['auth', 'active', 'module:accounting', 'throttle:staff-write'
     Route::get('payments/export', [CrmController::class, 'export']);
     Route::get('reports/gstr1', [CrmController::class, 'gstr1']);
     Route::get('reports/ageing', [CrmController::class, 'ageing']);
+    Route::get('reports/payables-ageing', [CrmController::class, 'payablesAgeing']);
+    Route::get('reports/tds', [CrmController::class, 'tds']);
+    Route::get('reports/statement', [CrmController::class, 'statement']);
 });
 
 Route::middleware(['auth', 'active', 'module:accounting', 'throttle:staff-write'])->group(function () {

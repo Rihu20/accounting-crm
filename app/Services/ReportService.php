@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Models\Client;
+use App\Models\Expense;
 use App\Models\Invoice;
 use App\Models\InvoiceNote;
 use App\Models\Payment;
@@ -44,6 +46,153 @@ class ReportService
         }
 
         return $rows;
+    }
+
+    /**
+     * Unpaid vendor bills bucketed by days past their due date, per currency.
+     *
+     * @return array<string, array<string, string|int>>
+     */
+    public function payablesAgeing(): array
+    {
+        $out = [];
+        foreach (Expense::where('expense_type', 'vendor')->where('status', 'Unpaid')->get() as $e) {
+            $c = $e->currency;
+            $out[$c] ??= ['Not due' => '0.00'] + array_fill_keys(array_keys(self::BUCKETS), '0.00') + ['total' => '0.00', 'count' => 0];
+            $days = $this->overdueDays($e);
+            $bucket = $days === null ? 'Not due' : collect(self::BUCKETS)->search(fn ($r) => $days >= $r[0] && $days <= $r[1]);
+            $out[$c][$bucket] = bcadd($out[$c][$bucket], $this->money($e->amount), 2);
+            $out[$c]['total'] = bcadd($out[$c]['total'], $this->money($e->amount), 2);
+            $out[$c]['count']++;
+        }
+        ksort($out);
+
+        return $out;
+    }
+
+    public function payablesAgeingRows(): array
+    {
+        $rows = [['Bill No', 'Payee', 'Group', 'Category', 'Currency', 'Bill Amount', 'TDS', 'Bill Date', 'Due Date', 'Days Overdue', 'Bucket', 'Payment request']];
+        foreach (Expense::with(['vendor', 'patentOffice'])->where('expense_type', 'vendor')->where('status', 'Unpaid')->orderByRaw('due_date is null')->orderBy('due_date')->orderBy('invoice_date')->get() as $e) {
+            $days = $this->overdueDays($e);
+            $rows[] = [
+                $e->vendor_invoice_no, $this->payeeName($e), ExpenseGroups::LABELS[$e->expense_group] ?? $e->expense_group, $e->category,
+                $e->currency, $this->money($e->amount), $this->money($e->tds_amount), $e->invoice_date->format('d.m.Y'),
+                $e->due_date?->format('d.m.Y') ?? '', $days ?? 0, $days === null ? 'Not due' : collect(self::BUCKETS)->search(fn ($r) => $days >= $r[0] && $days <= $r[1]),
+                $e->payment_request['status'] ?? '',
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * TDS register for a period: deducted by clients on receipts, and deducted by us on vendor bills.
+     *
+     * @return array<string, array> sheet title => rows
+     */
+    public function tds(string $from, string $to): array
+    {
+        $start = Carbon::parse($from)->startOfDay();
+        $end = Carbon::parse($to)->endOfDay();
+
+        $receipts = [['Received On', 'Txn Ref', 'Proforma No', 'Tax Invoice No', 'Client', 'GSTIN', 'Currency', 'Amount Received', 'TDS Deducted', 'Written Off', 'Invoice Value']];
+        $byClient = [];
+        foreach (Payment::where('reversed', false)->whereBetween('received_on', [$start->toDateString(), $end->toDateString()])->orderBy('received_on')->get() as $p) {
+            if (bccomp((string) ($p->tds_amount ?? '0'), '0', 2) <= 0) {
+                continue;
+            }
+            $invoice = Invoice::with('client')->find($p->invoice_id);
+            $client = $invoice?->client;
+            $receipts[] = [
+                $p->received_on->format('d.m.Y'), $p->txn_ref, $invoice?->number, $invoice?->taxInvoice?->number, $client?->name,
+                $client?->gstin ?? '', $p->currency, (string) $p->amount, (string) $p->tds_amount,
+                (string) ($p->write_off_amount ?? '0.00'), (string) ($invoice?->grand_total ?? ''),
+            ];
+            $key = ($client?->name ?? 'Unknown').'|'.$p->currency;
+            $byClient[$key] ??= ['client' => $client?->name ?? 'Unknown', 'currency' => $p->currency, 'tds' => '0.00', 'count' => 0];
+            $byClient[$key]['tds'] = bcadd($byClient[$key]['tds'], (string) $p->tds_amount, 2);
+            $byClient[$key]['count']++;
+        }
+
+        $bills = [['Bill Date', 'Payee', 'Bill No', 'Section', 'Currency', 'Taxable Value', 'TDS Rate %', 'TDS Deducted', 'Net Paid', 'Status', 'Paid On']];
+        $bySection = [];
+        foreach (Expense::with(['vendor', 'patentOffice'])->whereBetween('invoice_date', [$start->toDateString(), $end->toDateString()])->orderBy('invoice_date')->get() as $e) {
+            if (bccomp((string) ($e->tds_amount ?? '0'), '0', 2) <= 0) {
+                continue;
+            }
+            $bills[] = [
+                $e->invoice_date->format('d.m.Y'), $this->payeeName($e), $e->vendor_invoice_no, $e->tds_section ?: '', $e->currency,
+                $e->taxable_amount === null ? '' : $this->money($e->taxable_amount), (string) ($e->tds_rate ?? ''), $this->money($e->tds_amount), $this->money($e->amount),
+                $e->status, $e->paid_on?->format('d.m.Y') ?? '',
+            ];
+            $key = ($e->tds_section ?: 'Section not set').'|'.$e->currency;
+            $bySection[$key] ??= ['section' => $e->tds_section ?: 'Section not set', 'currency' => $e->currency, 'tds' => '0.00', 'count' => 0];
+            $bySection[$key]['tds'] = bcadd($bySection[$key]['tds'], (string) $e->tds_amount, 2);
+            $bySection[$key]['count']++;
+        }
+
+        $summary = [['Period', $start->format('d.m.Y').' to '.$end->format('d.m.Y')], [], ['TDS deducted by clients (credit in Form 26AS)'], ['Client', 'Currency', 'Receipts', 'TDS']];
+        foreach ($byClient as $row) {
+            $summary[] = [$row['client'], $row['currency'], $row['count'], $row['tds']];
+        }
+        $summary[] = [];
+        $summary[] = ['TDS deducted by us on vendor bills (payable to the department)'];
+        $summary[] = ['Section', 'Currency', 'Bills', 'TDS'];
+        foreach ($bySection as $row) {
+            $summary[] = [$row['section'], $row['currency'], $row['count'], $row['tds']];
+        }
+
+        return ['Summary' => $summary, 'Receipts TDS' => $receipts, 'Vendor Bill TDS' => $bills];
+    }
+
+    /**
+     * Statement of account for one client: one sheet per currency with a running balance.
+     *
+     * @return array<string, array> sheet title => rows
+     */
+    public function clientStatement(Client $client): array
+    {
+        $entries = [];
+        $invoices = Invoice::with(['payments', 'notes'])->where('client_id', $client->id)->where('doc_type', 'proforma')->whereNotNull('number')->where('status', '!=', 'Draft')->get();
+        foreach ($invoices as $i) {
+            $entries[] = ['date' => $i->sent_at ?? $i->invoice_date, 'type' => 'Proforma', 'ref' => $i->number, 'currency' => $i->currency, 'debit' => (string) $i->grand_total, 'credit' => '0.00'];
+            foreach ($i->payments->where('reversed', false) as $p) {
+                $entries[] = ['date' => $p->received_on, 'type' => 'Payment received', 'ref' => $p->txn_ref ?: $i->number, 'currency' => $p->currency, 'debit' => '0.00', 'credit' => (string) $p->amount];
+                if (bccomp((string) ($p->tds_amount ?? '0'), '0', 2) > 0) {
+                    $entries[] = ['date' => $p->received_on, 'type' => 'TDS deducted', 'ref' => $i->number, 'currency' => $p->currency, 'debit' => '0.00', 'credit' => (string) $p->tds_amount];
+                }
+                if (bccomp((string) ($p->write_off_amount ?? '0'), '0', 2) > 0) {
+                    $entries[] = ['date' => $p->received_on, 'type' => 'Short payment written off', 'ref' => $i->number, 'currency' => $p->currency, 'debit' => '0.00', 'credit' => (string) $p->write_off_amount];
+                }
+            }
+        }
+        foreach (InvoiceNote::with('invoice')->whereIn('invoice_id', Invoice::where('client_id', $client->id)->pluck('id'))->get() as $n) {
+            $entries[] = ['date' => $n->note_date, 'type' => $n->label(), 'ref' => $n->number, 'currency' => $n->currency, 'debit' => $n->type === 'debit' ? (string) $n->amount : '0.00', 'credit' => $n->type === 'debit' ? '0.00' : (string) $n->amount];
+        }
+
+        $sheets = [];
+        foreach (collect($entries)->groupBy('currency')->sortKeys() as $currency => $group) {
+            $rows = [['Statement of account – '.$client->name.' ('.$currency.')'], ['Client Ref', $client->ref_no ?: '', 'As on', today()->format('d.m.Y')], [], ['Date', 'Particulars', 'Reference', 'Debit', 'Credit', 'Balance']];
+            $balance = '0.00';
+            foreach ($group->sortBy(fn ($e) => [$e['date']->timestamp, $e['type']])->values() as $e) {
+                $balance = bcsub(bcadd($balance, $e['debit'], 2), $e['credit'], 2);
+                $rows[] = [$e['date']->format('d.m.Y'), $e['type'], $e['ref'], $e['debit'], $e['credit'], $balance];
+            }
+            $rows[] = ['', '', 'Closing balance due', '', '', $balance];
+            $sheets[$currency] = $rows;
+        }
+
+        return $sheets ?: ['Statement' => [['Statement of account – '.$client->name], ['No invoices or payments recorded for this client.']]];
+    }
+
+    /** The Indian financial year (1 April – 31 March) that contains the given date. */
+    public static function financialYear(?Carbon $on = null): array
+    {
+        $on ??= today();
+        $start = Carbon::create($on->month >= 4 ? $on->year : $on->year - 1, 4, 1)->startOfDay();
+
+        return [$start, $start->copy()->addYear()->subDay()];
     }
 
     /** Last N months: invoiced (tax invoices) and received (payments), per currency. */
@@ -111,5 +260,24 @@ class ReportService
         }
 
         return ['Invoices' => $invoices, 'Credit-Debit Notes' => $notes];
+    }
+
+    /** Days past the bill's due date (its invoice date when no due date is set), or null while it is not yet due. */
+    private function overdueDays(Expense $expense): ?int
+    {
+        $days = (int) ($expense->due_date ?? $expense->invoice_date)->copy()->startOfDay()->diffInDays(today());
+
+        return $days >= 0 ? $days : null;
+    }
+
+    /** Expense money columns are not all cast, so report cells are normalised to two decimals here. */
+    private function money(mixed $value): string
+    {
+        return Money::round((string) ($value ?? '0'));
+    }
+
+    private function payeeName(Expense $expense): string
+    {
+        return $expense->payee_name ?: ($expense->vendor?->name ?? $expense->patentOffice?->name ?? '');
     }
 }
