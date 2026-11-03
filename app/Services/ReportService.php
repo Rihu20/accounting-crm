@@ -15,6 +15,9 @@ class ReportService
 {
     public const BUCKETS = ['0-30' => [0, 30], '31-60' => [31, 60], '61-90' => [61, 90], '90+' => [91, PHP_INT_MAX]];
 
+    /** On one date a statement shows what was charged before what settled it. */
+    private const STATEMENT_ORDER = ['Proforma' => 0, 'Debit Note' => 1, 'Credit Note' => 2, 'Payment received' => 3, 'TDS deducted' => 4, 'Short payment written off' => 5];
+
     /** ['USD' => ['0-30' => '100.00', ..., 'total' => '...', 'count' => 3]] by days since the proforma was sent. */
     public function ageing(): array
     {
@@ -156,7 +159,7 @@ class ReportService
         $entries = [];
         $invoices = Invoice::with(['payments', 'notes'])->where('client_id', $client->id)->where('doc_type', 'proforma')->whereNotNull('number')->where('status', '!=', 'Draft')->get();
         foreach ($invoices as $i) {
-            $entries[] = ['date' => $i->sent_at ?? $i->invoice_date, 'type' => 'Proforma', 'ref' => $i->number, 'currency' => $i->currency, 'debit' => (string) $i->grand_total, 'credit' => '0.00'];
+            $entries[] = ['date' => ($i->sent_at ?? $i->invoice_date)->copy()->startOfDay(), 'type' => 'Proforma', 'ref' => $i->number, 'currency' => $i->currency, 'debit' => (string) $i->grand_total, 'credit' => '0.00'];
             foreach ($i->payments->where('reversed', false) as $p) {
                 $entries[] = ['date' => $p->received_on, 'type' => 'Payment received', 'ref' => $p->txn_ref ?: $i->number, 'currency' => $p->currency, 'debit' => '0.00', 'credit' => (string) $p->amount];
                 if (bccomp((string) ($p->tds_amount ?? '0'), '0', 2) > 0) {
@@ -175,7 +178,7 @@ class ReportService
         foreach (collect($entries)->groupBy('currency')->sortKeys() as $currency => $group) {
             $rows = [['Statement of account – '.$client->name.' ('.$currency.')'], ['Client Ref', $client->ref_no ?: '', 'As on', today()->format('d.m.Y')], [], ['Date', 'Particulars', 'Reference', 'Debit', 'Credit', 'Balance']];
             $balance = '0.00';
-            foreach ($group->sortBy(fn ($e) => [$e['date']->timestamp, $e['type']])->values() as $e) {
+            foreach ($group->sortBy(fn ($e) => [$e['date']->timestamp, self::STATEMENT_ORDER[$e['type']] ?? count(self::STATEMENT_ORDER)])->values() as $e) {
                 $balance = bcsub(bcadd($balance, $e['debit'], 2), $e['credit'], 2);
                 $rows[] = [$e['date']->format('d.m.Y'), $e['type'], $e['ref'], $e['debit'], $e['credit'], $balance];
             }

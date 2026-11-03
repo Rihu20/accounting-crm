@@ -128,10 +128,10 @@ it('builds a client statement of account whose closing balance is the amount sti
 
     $sheets = $this->reports->clientStatement($this->client);
     $rows = $sheets['USD'];
-    $particulars = collect($rows)->pluck(1);
+    $particulars = collect($rows)->slice(4, 3)->pluck(1)->all();
 
     expect($sheets)->toHaveKey('USD')
-        ->and($particulars)->toContain('Proforma', 'Payment received', 'TDS deducted')
+        ->and($particulars)->toBe(['Proforma', 'Payment received', 'TDS deducted'])
         ->and(end($rows))->toBe(['', '', 'Closing balance due', '', '', '300.00'])
         ->and($this->sent->fresh()->outstandingAmount())->toBe('300.00');
 });
