@@ -54,6 +54,8 @@ PDF rendering uses the specification's supported Dompdf fallback with explicit p
 
 Push to GitHub, then in Render pick Blueprint and point it at the repository. Set APP_KEY from `php artisan key:generate --show`, and APP_URL once Render has assigned the service its URL. DB_URL is injected from the database the blueprint creates.
 
+The `/setup` page answers on localhost alone, so a hosted database starts with no way in. `crm:first-run` fills that gap: on a database with no users it seeds the settings, bank accounts, payment gateways and patent offices, creates an administrator holding both the Accountant and Director roles, and prints a generated password once, to the deploy log. It skips itself as soon as a user exists, so the entrypoint can call it on every start. Change that password in Settings → Users after signing in.
+
 To carry the local data up, switch off the demo logins first so their published password does not travel with it, then copy into the hosted database from this computer. Put the database's external connection string in HOSTED_DB_URL – it has its own variables so that it cannot disturb the local SQLite connection – and load `pdo_pgsql`, which the bundled PHP does not enable by default:
 
 ```
