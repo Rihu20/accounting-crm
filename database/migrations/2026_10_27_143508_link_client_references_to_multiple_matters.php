@@ -9,7 +9,9 @@ return new class extends Migration
 {
     public function up(): void
     {
-        if (DB::table('matters')->whereNotNull('our_ref')->where('our_ref', '!=', '')->groupBy('our_ref')->havingRaw('COUNT(*) > 1')->exists()) {
+        // Only the grouped column may be selected: Postgres rejects the * that
+        // SQLite and MySQL allow here.
+        if (DB::table('matters')->select('our_ref')->whereNotNull('our_ref')->where('our_ref', '!=', '')->groupBy('our_ref')->havingRaw('COUNT(*) > 1')->exists()) {
             throw new RuntimeException('Duplicate matter dockets must be reviewed before adding the unique reference index.');
         }
         Schema::table('clients', fn (Blueprint $t) => $t->string('ref_no', 4)->nullable()->unique());
@@ -40,7 +42,7 @@ return new class extends Migration
 
     public function down(): void
     {
-        if (DB::table('matters')->groupBy('ref_no')->havingRaw('COUNT(*) > 1')->exists()) {
+        if (DB::table('matters')->select('ref_no')->groupBy('ref_no')->havingRaw('COUNT(*) > 1')->exists()) {
             throw new RuntimeException('Multiple matters now share a client reference; this migration cannot be rolled back safely.');
         }
         Schema::table('storage_folders', function (Blueprint $t) {
