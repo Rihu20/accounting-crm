@@ -46,11 +46,14 @@ COPY --from=assets /app/public/build public/build
 # The artisan calls below boot the framework, which needs a key of exactly 32
 # bytes. This throwaway one never leaves the build; Render supplies the real
 # APP_KEY at runtime.
+# The writable directories come first: .dockerignore keeps them out of the build
+# context, and both commands below boot the framework, which wants to log.
 RUN set -eu; \
     export APP_KEY="base64:$(php -r 'echo base64_encode(random_bytes(32));')"; \
+    mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views \
+             storage/logs storage/app/private storage/app/public bootstrap/cache; \
     composer dump-autoload --no-dev --optimize --classmap-authoritative; \
     php artisan filament:assets; \
-    mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache; \
     chmod -R 775 storage bootstrap/cache
 
 COPY docker/entrypoint.sh /usr/local/bin/crm-entrypoint
