@@ -63,7 +63,8 @@ class Expense extends Model
 
     protected function casts(): array
     {
-        return ['payment_request' => 'array', 'invoice_date' => 'date', 'due_date' => 'date', 'received_on' => 'date', 'sent_at' => 'datetime', 'parse_result' => 'array', 'original_items' => 'array', 'extraction_json' => 'array', 'is_active' => 'boolean', 'is_default' => 'boolean', 'subtotal' => 'decimal:2', 'disbursement_total' => 'decimal:2', 'tax_total' => 'decimal:2', 'grand_total' => 'decimal:2', 'amount' => 'decimal:2', 'qty' => 'decimal:2', 'rate' => 'decimal:2', 'tax_rate' => 'decimal:2', 'source_amount' => 'decimal:2', 'converted_amount' => 'decimal:2', 'charges_deducted' => 'decimal:2', 'taxable' => 'boolean'];
+        // The GST and TDS columns were the only money on an expense that came back unformatted.
+        return ['payment_request' => 'array', 'invoice_date' => 'date', 'due_date' => 'date', 'received_on' => 'date', 'sent_at' => 'datetime', 'parse_result' => 'array', 'original_items' => 'array', 'extraction_json' => 'array', 'is_active' => 'boolean', 'is_default' => 'boolean', 'subtotal' => 'decimal:2', 'disbursement_total' => 'decimal:2', 'tax_total' => 'decimal:2', 'grand_total' => 'decimal:2', 'amount' => 'decimal:2', 'qty' => 'decimal:2', 'rate' => 'decimal:2', 'tax_rate' => 'decimal:2', 'source_amount' => 'decimal:2', 'converted_amount' => 'decimal:2', 'charges_deducted' => 'decimal:2', 'taxable' => 'boolean', 'taxable_amount' => 'decimal:2', 'gst_amount' => 'decimal:2', 'igst' => 'decimal:2', 'cgst' => 'decimal:2', 'sgst' => 'decimal:2', 'tds_amount' => 'decimal:2', 'tds_applicable' => 'boolean', 'requires_15ca_cb' => 'boolean'];
     }
 
     public function getActivitylogOptions(): LogOptions

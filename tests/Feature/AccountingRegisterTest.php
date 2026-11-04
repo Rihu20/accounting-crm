@@ -93,6 +93,26 @@ it('calculates Indian purchase GST split TDS and payable without modifying a for
     Livewire::test(ExpensePage::class)->set('activeTab', 'indian')->assertCanSeeTableRecords([$expense])->assertCanNotSeeTableRecords([$foreign]);
 });
 
+it('reads GST and TDS back from the database as money, not raw column values', function () {
+    $expense = Expense::create([
+        'expense_type' => 'vendor', 'invoice_date' => today(), 'currency' => 'INR', 'paid_by' => 'company_bank',
+        'paid_by_user_id' => $this->admin->id, 'category' => 'Rent', 'status' => 'Unpaid', 'expense_group' => 'indian',
+        'taxable_amount' => '10000', 'gst_mode' => 'igst', 'gst_rate' => '18', 'tds_rate' => '10',
+    ]);
+
+    $stored = $expense->fresh();
+
+    expect($stored->taxable_amount)->toBe('10000.00')
+        ->and($stored->gst_amount)->toBe('1800.00')
+        ->and($stored->igst)->toBe('1800.00')
+        ->and($stored->cgst)->toBe('0.00')
+        ->and($stored->sgst)->toBe('0.00')
+        ->and($stored->tds_amount)->toBe('1000.00')
+        ->and($stored->amount)->toBe('10800.00')
+        ->and($stored->tds_applicable)->toBeTrue()
+        ->and($stored->requires_15ca_cb)->toBeFalse();
+});
+
 it('records the transfer bank and date when paying an expense from the register', function () {
     $expense = Expense::create(['expense_type' => 'vendor', 'invoice_date' => today(), 'amount' => '50', 'currency' => 'USD', 'paid_by' => 'company_bank', 'paid_by_user_id' => $this->admin->id, 'category' => 'Law firm', 'expense_group' => 'foreign', 'status' => 'Unpaid']);
     Livewire::test(ExpensePage::class)->callTableAction('paid', $expense, data: ['paid_on' => '2026-10-28', 'paid_ref' => 'wire-123', 'payment_bank_name' => 'Company Bank'])->assertHasNoTableActionErrors();

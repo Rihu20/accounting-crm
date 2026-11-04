@@ -64,8 +64,8 @@ class ReportService
             $out[$c] ??= ['Not due' => '0.00'] + array_fill_keys(array_keys(self::BUCKETS), '0.00') + ['total' => '0.00', 'count' => 0];
             $days = $this->overdueDays($e);
             $bucket = $days === null ? 'Not due' : collect(self::BUCKETS)->search(fn ($r) => $days >= $r[0] && $days <= $r[1]);
-            $out[$c][$bucket] = bcadd($out[$c][$bucket], $this->money($e->amount), 2);
-            $out[$c]['total'] = bcadd($out[$c]['total'], $this->money($e->amount), 2);
+            $out[$c][$bucket] = bcadd($out[$c][$bucket], (string) $e->amount, 2);
+            $out[$c]['total'] = bcadd($out[$c]['total'], (string) $e->amount, 2);
             $out[$c]['count']++;
         }
         ksort($out);
@@ -80,7 +80,7 @@ class ReportService
             $days = $this->overdueDays($e);
             $rows[] = [
                 $e->vendor_invoice_no, $this->payeeName($e), ExpenseGroups::LABELS[$e->expense_group] ?? $e->expense_group, $e->category,
-                $e->currency, $this->money($e->amount), $this->money($e->tds_amount), $e->invoice_date->format('d.m.Y'),
+                $e->currency, (string) $e->amount, (string) $e->tds_amount, $e->invoice_date->format('d.m.Y'),
                 $e->due_date?->format('d.m.Y') ?? '', $days ?? 0, $days === null ? 'Not due' : collect(self::BUCKETS)->search(fn ($r) => $days >= $r[0] && $days <= $r[1]),
                 $e->payment_request['status'] ?? '',
             ];
@@ -126,7 +126,7 @@ class ReportService
             }
             $bills[] = [
                 $e->invoice_date->format('d.m.Y'), $this->payeeName($e), $e->vendor_invoice_no, $e->tds_section ?: '', $e->currency,
-                $e->taxable_amount === null ? '' : $this->money($e->taxable_amount), (string) ($e->tds_rate ?? ''), $this->money($e->tds_amount), $this->money($e->amount),
+                (string) $e->taxable_amount, (string) ($e->tds_rate ?? ''), (string) $e->tds_amount, (string) $e->amount,
                 $e->status, $e->paid_on?->format('d.m.Y') ?? '',
             ];
             $key = ($e->tds_section ?: 'Section not set').'|'.$e->currency;
@@ -278,12 +278,6 @@ class ReportService
         $days = (int) ($expense->due_date ?? $expense->invoice_date)->copy()->startOfDay()->diffInDays(today());
 
         return $days >= 0 ? $days : null;
-    }
-
-    /** Expense money columns are not all cast, so report cells are normalised to two decimals here. */
-    private function money(mixed $value): string
-    {
-        return Money::round((string) ($value ?? '0'));
     }
 
     private function payeeName(Expense $expense): string
