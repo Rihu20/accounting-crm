@@ -22,6 +22,8 @@ Run `START_CRM.cmd` from the parent CRM folder. It opens a first-run setup page 
 
 Create users in Settings → Users and pick one of the four roles. Set the LUT ARN under Settings (key lut_arn) so export tax invoices print the LUT declaration.
 
+Four demo logins (`accountant@demo.test`, `assistant@demo.test`, `director@demo.test`, `paralegal@demo.test`) are created by a migration so each role can be tried out. Their password is in the migration, so it is public. Run `php artisan crm:disable-demo-logins` before the CRM holds real work, and `php artisan crm:disable-demo-logins --list` to check: it exits non-zero while any of them is still active.
+
 ## Workflow
 
 1. Review company details, tax rate, numbering, banks and gateway instructions under Settings. Seeded company details come from the specification and must be verified. Bank account numbers are deliberately empty.
@@ -47,6 +49,8 @@ Vendor PDF extraction requires ANTHROPIC_API_KEY and ANTHROPIC_MODEL in `.env`. 
 PDF rendering uses the specification's supported Dompdf fallback with explicit page chunking, repeated headers and carry-forward totals. This avoids installing a separate Chromium process on this Windows computer. Very long descriptions are limited on entry; verify printed invoice layouts with real company content before production. No email is automatically sent on finalising a proforma: finalisation stores its PDF and notifies the paralegal; download it for delivery to the client.
 
 ## Backup
+
+`php artisan crm:backup` writes a dated copy of the SQLite database to `database/backups` and keeps the newest 30. It uses `VACUUM INTO`, so the copy is consistent even while the app is serving. Pass `--path` to write to another drive or a synced folder, and `--keep` to change how many are kept. The scheduler runs it daily at 02:00 Asia/Kolkata, so `php artisan schedule:work` (or `schedule:run` every minute on a server) must be running. START_CRM.cmd still takes its own copy on each start. For MySQL the command refuses to run – schedule a transaction-consistent mysqldump instead.
 
 Before real data, configure a daily encrypted off-device backup of the database, private file disk and `.env`. For local SQLite, stop the app before copying database/database.sqlite and storage/app/private. For MySQL, use a transaction-consistent mysqldump and backup the configured cloud disk separately. Keep daily and weekly versions and test restore to a separate environment. No off-device backup destination is configured automatically.
 

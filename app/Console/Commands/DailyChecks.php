@@ -18,7 +18,7 @@ class DailyChecks extends Command
     public function handle(NotifyService $notify): int
     {
         foreach (Invoice::whereIn('status', ['Sent', 'Partially received'])->whereNotNull('sent_at')->get() as $i) {
-            $days = (int) $i->sent_at->startOfDay()->diffInDays(today());
+            $days = (int) $i->sent_at->copy()->startOfDay()->diffInDays(today());
             $first = max(1, (int) Setting::get('followup_days', 15));
             $repeat = max(1, (int) Setting::get('followup_repeat_days', 7));
             if ($days >= $first && ($days - $first) % $repeat === 0) {
