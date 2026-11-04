@@ -99,6 +99,21 @@ return [
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
+        /*
+         * The target of crm:db-copy. It reads its own variables so that pointing it
+         * at a hosted server cannot disturb the local connection: DB_URL and
+         * DB_DATABASE are shared by every connection above, sqlite included.
+         */
+        'hosted' => [
+            'driver' => env('HOSTED_DB_DRIVER', 'pgsql'),
+            'url' => env('HOSTED_DB_URL'),
+            'charset' => 'utf8',
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => env('HOSTED_DB_SSLMODE', 'require'),
+        ],
+
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),

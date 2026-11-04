@@ -5,6 +5,7 @@ namespace App\Providers;
 use Google\Client;
 use Google\Service\Drive;
 use Illuminate\Filesystem\FilesystemAdapter;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\ServiceProvider;
 use League\Flysystem\Filesystem;
@@ -16,6 +17,11 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // A platform that terminates TLS at its edge is reached through its own proxy,
+        // never localhost. Until that proxy is trusted, isSecure() stays false and
+        // PlatformSecurity redirects to https forever.
+        $proxies = (string) config('platform.trusted_proxies');
+        TrustProxies::at($proxies === '*' ? '*' : array_filter(array_map('trim', explode(',', $proxies))));
 
         Storage::extend('google', function ($app, $config) {
             $client = new Client;

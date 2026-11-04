@@ -38,7 +38,7 @@ Accountant and Director see Reports. GSTR-1 working downloads as a month workboo
 
 ## Local defaults and production setup
 
-The included local app uses SQLite because this computer has no MySQL server. Migrations also target MySQL 8. For shared deployment, set DB_CONNECTION=mysql and DB_HOST, DB_DATABASE, DB_USERNAME and DB_PASSWORD in `.env`; run `php artisan migrate --seed`. Do not copy a live SQLite database into MySQL. Use HTTPS, APP_ENV=production, APP_DEBUG=false, a unique APP_KEY, and your own administrator credentials. Point the web server only at `public/`. The local web server is for this computer only.
+The included local app uses SQLite because this computer has no MySQL server. Migrations also target MySQL 8. For shared deployment, set DB_CONNECTION=mysql and DB_HOST, DB_DATABASE, DB_USERNAME and DB_PASSWORD in `.env`; run `php artisan migrate --seed`. To carry the local data across instead of starting empty, migrate the target first and then use `crm:db-copy` (see Hosting). Use HTTPS, APP_ENV=production, APP_DEBUG=false, a unique APP_KEY, and your own administrator credentials. Point the web server only at `public/`. The local web server is for this computer only.
 
 Private local file storage works immediately. Set CRM_DISK=s3 for S3-compatible storage and configure AWS variables. Google Drive support uses CRM_DISK=google and GOOGLE_DRIVE_CLIENT_ID, GOOGLE_DRIVE_CLIENT_SECRET, GOOGLE_DRIVE_REFRESH_TOKEN, GOOGLE_DRIVE_FOLDER. These external services need real credentials and have not been connected here. Never commit `.env` or private documents.
 
@@ -47,6 +47,23 @@ Set mail transport variables and CRM_MAIL_ENABLED=true to send email notificatio
 Vendor PDF extraction requires ANTHROPIC_API_KEY and ANTHROPIC_MODEL in `.env`. Manual entry always works. Extraction results require Admin review and confirmation. No AI API call is made without configuration.
 
 PDF rendering uses the specification's supported Dompdf fallback with explicit page chunking, repeated headers and carry-forward totals. This avoids installing a separate Chromium process on this Windows computer. Very long descriptions are limited on entry; verify printed invoice layouts with real company content before production. No email is automatically sent on finalising a proforma: finalisation stores its PDF and notifies the paralegal; download it for delivery to the client.
+
+## Hosting
+
+`render.yaml` and `Dockerfile` deploy the app to Render as a Docker web service with a free Postgres database. The image installs Composer and npm, builds the Vite assets, publishes Filament's assets and serves `public/` with FrankenPHP. `docker/entrypoint.sh` runs on every container start and is idempotent: migrate, switch off the demo logins, then cache config, routes and views. Render terminates TLS at its own proxy, so TRUSTED_PROXIES=* is required – without it `isSecure()` stays false and PlatformSecurity redirects to https forever.
+
+Push to GitHub, then in Render pick Blueprint and point it at the repository. Set APP_KEY from `php artisan key:generate --show`, and APP_URL once Render has assigned the service its URL. DB_URL is injected from the database the blueprint creates.
+
+To carry the local data up, switch off the demo logins first so their published password does not travel with it, then copy into the hosted database from this computer. Put the database's external connection string in HOSTED_DB_URL – it has its own variables so that it cannot disturb the local SQLite connection – and load `pdo_pgsql`, which the bundled PHP does not enable by default:
+
+```
+php artisan crm:disable-demo-logins
+..\.tools\php\php.exe -d extension_dir=..\.tools\php\ext -d extension=php_pdo_pgsql.dll artisan crm:db-copy --force
+```
+
+`crm:db-copy` copies data, never schema, so the target must already be migrated. It orders tables by their foreign keys, fits SQLite's loosely typed values to real column types (a boolean 0 or 1 is rejected by a real boolean column), replaces the rows migrations seed rather than merging onto them so the source's own ids survive, and resets the Postgres sequences afterwards. It leaves `cache`, `sessions`, `jobs` and `migrations` behind.
+
+What the free plan does not provide, all of which matter for real data: **the database is deleted 30 days after it is created**, so move to a paid plan or export before then; the filesystem is wiped on every deploy, so set CRM_DISK=s3 with the AWS variables or uploaded invoices and documents will not survive a restart (Cloudflare R2 is S3-compatible, free to 10 GB, and needs AWS_ENDPOINT and AWS_USE_PATH_STYLE_ENDPOINT=true); there is no cron, so `crm:daily-checks` and `crm:backup` never run and payment reminders stop arriving; there is no worker, so QUEUE_CONNECTION=sync runs vendor extraction inside the request instead; and the service sleeps after 15 minutes idle and takes about a minute to wake.
 
 ## Backup
 

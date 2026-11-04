@@ -1,0 +1,29 @@
+# Live data and secrets must never reach an image.
+.env
+.env.*
+*.sqlite
+*.sqlite-journal
+database/*.sqlite
+database/backups
+storage/app/private
+storage/app/public
+storage/crm-demo
+storage/logs
+storage/framework/cache
+storage/framework/sessions
+storage/framework/views
+
+# Rebuilt inside the image.
+node_modules
+vendor
+public/build
+public/css/filament
+public/js/filament
+public/fonts
+
+.git
+.github
+.ai
+tests
+.phpunit.cache
+resources/reader/__pycache__

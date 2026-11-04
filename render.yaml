@@ -1,0 +1,72 @@
+services:
+  - type: web
+    name: accounting-crm
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /up
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: false
+      # php artisan key:generate --show
+      - key: APP_KEY
+        sync: false
+      # Fill in once Render has given the service its URL.
+      - key: APP_URL
+        sync: false
+      - key: APP_TIMEZONE
+        value: Asia/Kolkata
+
+      - key: DB_CONNECTION
+        value: pgsql
+      - key: DB_URL
+        fromDatabase:
+          name: accounting-crm-db
+          property: connectionString
+
+      - key: SESSION_DRIVER
+        value: database
+      - key: SESSION_ENCRYPT
+        value: true
+      - key: SESSION_SECURE_COOKIE
+        value: true
+      - key: CACHE_STORE
+        value: database
+
+      # The free plan runs one web service and no worker, so queued vendor-invoice
+      # extraction has to happen inside the request instead.
+      - key: QUEUE_CONNECTION
+        value: sync
+
+      - key: LOG_CHANNEL
+        value: stderr
+      - key: LOG_LEVEL
+        value: warning
+
+      # Render terminates TLS at its edge, so the app only ever sees forwarded headers.
+      - key: PLATFORM_FORCE_HTTPS
+        value: true
+      - key: TRUSTED_PROXIES
+        value: "*"
+
+      # The free plan wipes the filesystem on every deploy. Uploaded invoices and
+      # documents only survive on an S3-compatible disk: see Hosting in README.md.
+      - key: CRM_DISK
+        value: local
+
+      - key: MAIL_MAILER
+        value: log
+      - key: CRM_MAIL_ENABLED
+        value: false
+
+databases:
+  - name: accounting-crm-db
+    plan: free
+    databaseName: accounting_crm
+    user: accounting_crm
+    region: singapore
