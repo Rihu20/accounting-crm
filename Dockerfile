@@ -56,6 +56,14 @@ RUN set -eu; \
     php artisan filament:assets; \
     chmod -R 775 storage bootstrap/cache
 
+# The image gives frankenphp CAP_NET_BIND_SERVICE so it can take port 80. Render
+# runs containers with no_new_privs, where execve refuses a binary carrying file
+# capabilities at all. Nothing here binds a privileged port, and a plain copy
+# does not keep them.
+RUN cp /usr/local/bin/frankenphp /tmp/frankenphp \
+    && mv -f /tmp/frankenphp /usr/local/bin/frankenphp \
+    && chmod +x /usr/local/bin/frankenphp
+
 COPY docker/entrypoint.sh /usr/local/bin/crm-entrypoint
 RUN chmod +x /usr/local/bin/crm-entrypoint
 
