@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\ArchivedMaster;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
@@ -13,6 +14,11 @@ class Paralegal extends Model
     use SoftDeletes;
 
     protected $guarded = [];
+
+    protected static function booted(): void
+    {
+        static::saving(fn (Paralegal $paralegal) => ArchivedMaster::guard($paralegal));
+    }
 
     protected function casts(): array
     {

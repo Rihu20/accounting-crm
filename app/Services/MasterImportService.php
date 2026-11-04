@@ -113,6 +113,10 @@ class MasterImportService
                 if (isset($seenMasterKeys[$identity])) {
                     $errors[] = 'Duplicate '.$identityKey.' in this workbook';
                 }
+                $archived = filled($values[$identityKey]) ? ArchivedMaster::holding($identityModel, $identityKey, $values[$identityKey])->first() : null;
+                if ($archived) {
+                    $errors[] = ArchivedMaster::message($identityModel, $identityKey, $identityKey, $archived->getKey());
+                }
                 if ($errors) {
                     $out['rejected']++;
                     $out['errors'][] = ['sheet' => $sheet, 'row' => $r, 'error' => implode('; ', $errors)];

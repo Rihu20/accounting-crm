@@ -27,7 +27,7 @@ Four demo logins (`accountant@demo.test`, `assistant@demo.test`, `director@demo.
 ## Workflow
 
 1. Review company details, tax rate, numbering, banks and gateway instructions under Settings. Seeded company details come from the specification and must be verified. Bank account numbers are deliberately empty.
-2. Add masters directly or upload the completed supplied Excel in Import masters. Review the preview and confirm. Invalid rows block the import. Re-import updates existing keys. Ref No is a four-character text string.
+2. Add masters directly or upload the completed supplied Excel in Import masters. Review the preview and confirm. Invalid rows block the import. Re-import updates existing keys. Ref No is a four-character text string. Masters are never deleted in the app. A client, vendor, matter or paralegal archived directly in the database keeps its name or reference reserved behind the unique index: saving or importing that value is refused with the archived record's id instead of a database error. `php artisan crm:archived-masters` lists them and `--restore=Client:12` puts one back.
 3. Download the fee Word template. Word uploads create drafts only after validation and confirmation. Admins can also make a proforma manually. Review/edit its items, currency and bank, then finalise.
 4. Approvers record partial or full payments. Received proformas expose Order Tax Invoice to Admin. PDF, matter folders and notifications are generated.
 5. Record vendor invoices or owner expenses. Owners see their own expenses. Admin records vendor payments and owner reimbursements.

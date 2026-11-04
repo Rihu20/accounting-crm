@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\ArchivedMaster;
 use App\Services\MatterReference;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -21,6 +22,7 @@ class Matter extends Model
     {
         static::saving(function ($m) {
             $m->our_ref = filled($m->our_ref) ? strtoupper(trim($m->our_ref)) : null;
+            ArchivedMaster::guard($m);
             $parts = MatterReference::parse($m->our_ref);
             if ($parts) {
                 if (filled($m->ref_no) && $m->ref_no !== $parts['client_ref']) {

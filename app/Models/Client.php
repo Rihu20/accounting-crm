@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\ArchivedMaster;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Validator;
@@ -20,7 +21,8 @@ class Client extends Model
     protected static function booted(): void
     {
         static::saving(function ($client) {
-            Validator::make($client->toArray(), ['ref_no' => ['nullable', 'regex:/^\d{4}$/', Rule::unique('clients', 'ref_no')->ignore($client->id)]])->validate();
+            ArchivedMaster::guard($client);
+            Validator::make($client->toArray(), ['ref_no' => ['nullable', 'regex:/^\d{4}$/', Rule::unique('clients', 'ref_no')->ignore($client->id)->withoutTrashed()]])->validate();
             if ($client->exists && $client->isDirty('ref_no') && Matter::where('client_id', $client->id)->where('ref_no', '!=', $client->ref_no ?? '')->exists()) {
                 throw ValidationException::withMessages(['ref_no' => 'This client has linked matters. Their client references must match before changing this Ref No.']);
             }

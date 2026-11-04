@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\ArchivedMaster;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
@@ -13,6 +14,11 @@ class Vendor extends Model
     use SoftDeletes;
 
     protected $guarded = [];
+
+    protected static function booted(): void
+    {
+        static::saving(fn (Vendor $vendor) => ArchivedMaster::guard($vendor));
+    }
 
     protected function casts(): array
     {
