@@ -233,6 +233,21 @@ class CrmTest extends TestCase
         $this->assertSame(1, DB::table('reminder_events')->count());
     }
 
+    public function test_vendor_bills_without_a_due_date_are_reminded_on_their_bill_date(): void
+    {
+        $bill = fn (array $row) => Expense::create($row + ['expense_type' => 'vendor', 'status' => 'Unpaid', 'expense_group' => 'foreign', 'currency' => 'USD', 'amount' => '50', 'category' => 'Law firm', 'paid_by' => 'company_bank', 'paid_by_user_id' => $this->admin->id]);
+        $dated = $bill(['vendor_invoice_no' => 'WITH-DUE', 'invoice_date' => today()->subDays(40), 'due_date' => today()->addDays(2)]);
+        $overdue = $bill(['vendor_invoice_no' => 'NO-DUE-OLD', 'invoice_date' => today()->subDays(40)]);
+        $future = $bill(['vendor_invoice_no' => 'NO-DUE-FUTURE', 'invoice_date' => today()->addDays(10)]);
+
+        $this->artisan('crm:daily-checks')->assertSuccessful();
+
+        $reminded = DB::table('reminder_events')->pluck('event_key')->all();
+        $this->assertContains('vendor:'.$dated->id.':'.today()->toDateString(), $reminded);
+        $this->assertContains('vendor:'.$overdue->id.':'.today()->toDateString(), $reminded);
+        $this->assertNotContains('vendor:'.$future->id.':'.today()->toDateString(), $reminded);
+    }
+
     public function test_vendor_extraction_does_not_autosave_expenses(): void
     {
         config(['crm.reader_mode' => 'anthropic', 'crm.anthropic_key' => 'test-only', 'crm.anthropic_model' => 'mock-model']);

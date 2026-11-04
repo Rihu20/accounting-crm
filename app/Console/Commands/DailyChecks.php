@@ -28,8 +28,17 @@ class DailyChecks extends Command
                 });
             }
         }
-        foreach (Expense::where('expense_type', 'vendor')->where('status', 'Unpaid')->whereDate('due_date', '<=', today()->addDays(3))->get() as $e) {
-            $this->once('vendor:'.$e->id.':'.today()->toDateString(), fn () => $notify->admins('Vendor invoice due', 'Vendor invoice '.$e->vendor_invoice_no.' is due '.$e->due_date?->format('d.m.Y')));
+        // A bill with no due date falls back to its bill date, the way the payables ageing report reads it.
+        $by = today()->addDays(3);
+        $bills = Expense::where('expense_type', 'vendor')->where('status', 'Unpaid')
+            ->where(fn ($q) => $q->whereDate('due_date', '<=', $by)
+                ->orWhere(fn ($q) => $q->whereNull('due_date')->whereDate('invoice_date', '<=', $by)))
+            ->get();
+        foreach ($bills as $e) {
+            $when = $e->due_date
+                ? 'is due '.$e->due_date->format('d.m.Y')
+                : 'has no due date and was billed on '.$e->invoice_date->format('d.m.Y');
+            $this->once('vendor:'.$e->id.':'.today()->toDateString(), fn () => $notify->admins('Vendor invoice due', 'Vendor invoice '.$e->vendor_invoice_no.' '.$when));
         }
         if (today()->dayOfWeek === 1) {
             $count = Expense::where('expense_type', 'owner')->where('reimbursement_status', 'Pending')->whereDate('invoice_date', '<=', today()->subDays(30))->count();
