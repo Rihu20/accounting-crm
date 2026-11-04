@@ -19,7 +19,8 @@ vendor
 public/build
 public/css/filament
 public/js/filament
-public/fonts
+# Only Filament's copy is published into the image; fonts/fira-sans is committed.
+public/fonts/filament
 
 .git
 .github
