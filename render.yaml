@@ -19,8 +19,6 @@ services:
       # Fill in once Render has given the service its URL.
       - key: APP_URL
         sync: false
-      - key: APP_TIMEZONE
-        value: Asia/Kolkata
 
       - key: DB_CONNECTION
         value: pgsql

@@ -13,4 +13,4 @@ php artisan crm:disable-demo-logins
 php artisan config:cache
 php artisan view:cache
 
-exec frankenphp php-server --listen ":${PORT:-10000}" --root /app/public
+exec frankenphp php-server --listen=":${PORT:-10000}" --root=/app/public
