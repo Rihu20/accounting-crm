@@ -90,6 +90,15 @@ it('needs the target migrated before it will copy anything', function () {
     $this->artisan('crm:db-copy', ['--from' => $this->source, '--to' => 'copy_target', '--force' => true])->assertFailed();
 });
 
+it('resets a sequence only for a counted key', function () {
+    expect(CopyDatabase::resequences(['name' => 'id', 'type_name' => 'int8']))->toBeTrue()
+        ->and(CopyDatabase::resequences(['name' => 'id', 'type_name' => 'integer']))->toBeTrue()
+        // notifications is keyed by a uuid, and Postgres has no max(uuid).
+        ->and(CopyDatabase::resequences(['name' => 'id', 'type_name' => 'uuid']))->toBeFalse()
+        ->and(CopyDatabase::resequences(['name' => 'id', 'type_name' => 'varchar']))->toBeFalse()
+        ->and(CopyDatabase::resequences(null))->toBeFalse();
+});
+
 it('fits a loosely typed value to the column it lands in', function () {
     // Postgres rejects the 0 and 1 SQLite hands back for a boolean.
     expect(CopyDatabase::value(1, 'bool'))->toBeTrue()

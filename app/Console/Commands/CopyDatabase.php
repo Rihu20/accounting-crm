@@ -198,6 +198,17 @@ class CopyDatabase extends Command
     }
 
     /**
+     * Only a counted key has a sequence to put right: a notification is keyed by
+     * a uuid, and Postgres has no max(uuid) to set one from.
+     *
+     * @param  array<string, mixed>|null  $id
+     */
+    public static function resequences(?array $id): bool
+    {
+        return in_array(strtolower((string) ($id['type_name'] ?? '')), ['int2', 'int4', 'int8', 'smallint', 'integer', 'bigint'], true);
+    }
+
+    /**
      * An explicit id leaves a Postgres sequence behind the rows it just received.
      *
      * @param  list<string>  $tables
@@ -209,6 +220,9 @@ class CopyDatabase extends Command
         }
         foreach ($tables as $table) {
             if (! preg_match('/^[A-Za-z0-9_]+$/', $table)) {
+                continue;
+            }
+            if (! self::resequences(collect(Schema::connection($connection)->getColumns($table))->firstWhere('name', 'id'))) {
                 continue;
             }
             DB::connection($connection)->statement(
