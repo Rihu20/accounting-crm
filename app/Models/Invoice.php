@@ -60,11 +60,10 @@ class Invoice extends Model
         return $this->hasMany(InvoiceItem::class)->orderBy('sort_order');
     }
 
+    /** Cash received, from the loaded payments so a list of invoices costs no query per row. */
     public function receivedAmount(): string
     {
-        $paymentInvoiceId = $this->doc_type === 'tax' && $this->proforma_id ? $this->proforma_id : $this->id;
-
-        return (string) Payment::where('invoice_id', $paymentInvoiceId)->where('reversed', false)->sum('amount');
+        return $this->registerPaymentTotal('amount');
     }
 
     public function payments()

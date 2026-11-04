@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Expense;
 use App\Models\Invoice;
 use App\Models\Payment;
+use App\Models\Setting;
 use App\Models\User;
 use Illuminate\Support\Collection;
 
@@ -75,7 +76,7 @@ class DashboardService
 
     public function overdueCount(): int
     {
-        return Invoice::where('doc_type', 'proforma')->whereIn('status', ['Sent', 'Partially received'])->where('sent_at', '<=', now()->subDays((int) \App\Models\Setting::get('followup_days', 15)))->count();
+        return Invoice::where('doc_type', 'proforma')->whereIn('status', ['Sent', 'Partially received'])->where('sent_at', '<=', now()->subDays((int) Setting::get('followup_days', 15)))->count();
     }
 
     public function approvals(): array
@@ -101,7 +102,10 @@ class DashboardService
 
     public function recentPayments(int $limit = 5): Collection
     {
-        return Payment::with('markedBy')->where('reversed', false)->latest('received_on')->latest('id')->limit($limit)->get()->each(fn ($p) => $p->setRelation('invoiceRef', Invoice::with('client')->find($p->invoice_id)));
+        $payments = Payment::with('markedBy')->where('reversed', false)->latest('received_on')->latest('id')->limit($limit)->get();
+        $invoices = Invoice::with('client')->whereIn('id', $payments->pluck('invoice_id')->unique())->get()->keyBy('id');
+
+        return $payments->each(fn (Payment $p) => $p->setRelation('invoiceRef', $invoices->get($p->invoice_id)));
     }
 
     public function assistantQueue(): array

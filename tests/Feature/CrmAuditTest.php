@@ -4,7 +4,6 @@ use App\Exports\RowsExport;
 use App\Filament\Resources\ExpenseResource\Pages\ManageRecords as ExpensePage;
 use App\Filament\Resources\InvoiceDocumentResource\Pages\ManageRecords as LibraryPage;
 use App\Filament\Resources\InvoiceResource\Pages\ManageRecords as InvoicePage;
-use App\Filament\Resources\UserResource\Pages\ManageRecords;
 use App\Models\Client;
 use App\Models\Expense;
 use App\Models\Invoice;
@@ -28,7 +27,6 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpWord\PhpWord;
-use Spatie\Permission\Models\Role;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
@@ -80,7 +78,7 @@ it('carries received payments through to the tax invoice tracker', function () {
     $invoice = app(InvoiceService::class)->send($this->invoice);
     app(PaymentService::class)->receive($invoice, ['amount' => '100.00', 'currency' => 'USD', 'bank_account_id' => $invoice->bank_account_id, 'txn_ref' => 'audit', 'received_on' => today()->toDateString()], $approver);
     $tax = app(InvoiceService::class)->orderTax($invoice, today()->toDateString(), $this->admin);
-    expect(bcsub($tax->grand_total, $tax->receivedAmount(), 2))->toBe('0.00')->and($tax->receivedAmount())->toBe('100');
+    expect(bcsub($tax->grand_total, $tax->receivedAmount(), 2))->toBe('0.00')->and($tax->receivedAmount())->toBe('100.00');
 });
 it('rejects an open draft edit after another action finalises it', function () {
     $old = Invoice::find($this->invoice->id);

@@ -224,7 +224,7 @@ class CrmController extends Controller
     {
         abort_unless(auth()->user()->is_active && auth()->user()->allowed('accounting.invoices.export'), 403);
         $rows = [['Invoice No', 'Type', 'Client Ref Nos', 'Matter Ref Nos', 'Client', 'Paralegal', 'Currency', 'Total', 'Received', 'TDS', 'Written off', 'Outstanding', 'Invoice date', 'Status']];
-        foreach (Invoice::with(['client', 'paralegal', 'items'])->get() as $i) {
+        foreach (Invoice::with(['client', 'paralegal', 'items', 'payments', 'proforma.payments'])->get() as $i) {
             $sum = $i->receivedAmount();
             $rows[] = [$i->number, $i->doc_type, $i->items->pluck('ref_no')->unique()->implode(', '), $i->items->pluck('our_ref')->filter()->unique()->implode(', '), $i->client->name, $i->paralegal?->name, $i->currency, $i->grand_total, $sum, $i->registerPaymentTotal('tds_amount'), $i->registerPaymentTotal('write_off_amount'), $i->outstandingAmount(), $i->invoice_date->format('d.m.Y'), $i->status];
         }

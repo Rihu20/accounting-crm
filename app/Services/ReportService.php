@@ -101,11 +101,11 @@ class ReportService
 
         $receipts = [['Received On', 'Txn Ref', 'Proforma No', 'Tax Invoice No', 'Client', 'GSTIN', 'Currency', 'Amount Received', 'TDS Deducted', 'Written Off', 'Invoice Value']];
         $byClient = [];
-        foreach (Payment::where('reversed', false)->whereBetween('received_on', [$start->toDateString(), $end->toDateString()])->orderBy('received_on')->get() as $p) {
-            if (bccomp((string) ($p->tds_amount ?? '0'), '0', 2) <= 0) {
-                continue;
-            }
-            $invoice = Invoice::with('client')->find($p->invoice_id);
+        $withTds = Payment::where('reversed', false)->whereBetween('received_on', [$start->toDateString(), $end->toDateString()])->orderBy('received_on')->get()
+            ->filter(fn (Payment $payment) => bccomp((string) ($payment->tds_amount ?? '0'), '0', 2) > 0);
+        $invoices = Invoice::with(['client', 'taxInvoice'])->whereIn('id', $withTds->pluck('invoice_id')->unique())->get()->keyBy('id');
+        foreach ($withTds as $p) {
+            $invoice = $invoices->get($p->invoice_id);
             $client = $invoice?->client;
             $receipts[] = [
                 $p->received_on->format('d.m.Y'), $p->txn_ref, $invoice?->number, $invoice?->taxInvoice?->number, $client?->name,
@@ -201,16 +201,23 @@ class ReportService
     /** Last N months: invoiced (tax invoices) and received (payments), per currency. */
     public function monthly(int $months = 6): array
     {
+        $first = now()->startOfMonth()->subMonths($months - 1);
+        $last = now()->endOfMonth();
+        $label = fn ($date) => $date->format('M Y');
+        $invoiced = Invoice::where('doc_type', 'tax')->whereBetween('invoice_date', [$first->toDateString(), $last->toDateString()])->get(['currency', 'grand_total', 'invoice_date'])
+            ->groupBy(fn (Invoice $invoice) => $label($invoice->invoice_date));
+        $received = Payment::where('reversed', false)->whereBetween('received_on', [$first->toDateString(), $last->toDateString()])->get(['currency', 'amount', 'received_on'])
+            ->groupBy(fn (Payment $payment) => $label($payment->received_on));
+
         $rows = [];
         for ($m = $months - 1; $m >= 0; $m--) {
-            $start = now()->startOfMonth()->subMonths($m);
-            $end = $start->copy()->endOfMonth();
-            $row = ['month' => $start->format('M Y'), 'invoiced' => [], 'received' => [], 'tax_count' => 0];
-            foreach (Invoice::where('doc_type', 'tax')->whereBetween('invoice_date', [$start->toDateString(), $end->toDateString()])->get(['currency', 'grand_total']) as $i) {
+            $month = $label(now()->startOfMonth()->subMonths($m));
+            $row = ['month' => $month, 'invoiced' => [], 'received' => [], 'tax_count' => 0];
+            foreach ($invoiced->get($month, collect()) as $i) {
                 $row['invoiced'][$i->currency] = bcadd($row['invoiced'][$i->currency] ?? '0', (string) $i->grand_total, 2);
                 $row['tax_count']++;
             }
-            foreach (Payment::where('reversed', false)->whereBetween('received_on', [$start->toDateString(), $end->toDateString()])->get(['currency', 'amount']) as $p) {
+            foreach ($received->get($month, collect()) as $p) {
                 $row['received'][$p->currency] = bcadd($row['received'][$p->currency] ?? '0', (string) $p->amount, 2);
             }
             $rows[] = $row;
