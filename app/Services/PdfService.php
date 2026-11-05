@@ -7,74 +7,117 @@ use App\Models\InvoiceItem;
 use App\Models\Setting;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 
 class PdfService
 {
-    public function pages(Invoice $invoice): array
+    public function pages(Invoice $invoice, ?array $viewData = null): array
     {
-        $pages = [];
-        $page = [];
-        $units = 0;
-        $running = '0.00';
-        $brought = '0.00';
-        $lastMatter = null;
+        $viewData ??= $this->viewData($invoice);
+        $items = [];
         $groups = $invoice->items()->where('fee_type', '!=', 'Disbursement')->get()->groupBy(fn ($item) => $this->applicationKey($item).($invoice->invoice_layout === 'combined' ? '|'.$item->matter_text : ''));
-        $flush = function () use (&$pages, &$page, &$units, &$running, &$brought, &$lastMatter): void {
-            $pages[] = ['items' => $page, 'brought' => $brought, 'carried' => $running, 'last' => false];
-            $page = [];
-            $units = 0;
-            $brought = $running;
-            $lastMatter = null;
-        };
         foreach ($groups->values() as $groupIndex => $group) {
             $ordered = $group->sortBy(fn ($item) => array_search($item->fee_type, ['Official Fees', 'Professional Fees', 'Translation', 'Official + Professional Fees'], true))->values();
             if ($invoice->invoice_layout === 'combined') {
                 $combined = clone $ordered->first();
-                $amount = '0.00';
-                foreach ($ordered as $item) {
-                    $amount = bcadd($amount, $item->amount, 2);
-                }
-                $combined->amount = $amount;
-                $combined->rate = $amount;
+                $combined->amount = $ordered->reduce(fn (string $sum, InvoiceItem $item): string => bcadd($sum, $item->amount, 2), '0.00');
+                $combined->rate = $combined->amount;
                 $combined->qty = '1.00';
                 $combined->fee_type = 'Official + Professional Fees';
                 $ordered = collect([$combined]);
             }
-            $contextLines = 3 + ($ordered->first()->app_no ? 1 : 0) + ($ordered->first()->pct_no ? 1 : 0) + ($ordered->first()->your_ref ? 1 : 0) + (int) ceil(mb_strlen($ordered->first()->matter_text) / 48);
-            $blockLines = $invoice->invoice_layout === 'combined' ? $contextLines + 2 : $contextLines + $ordered->sum(fn ($item) => 2 + (int) ceil(mb_strlen($item->matter_text) / 80));
-            if ($page && $blockLines <= 24 && $units + $blockLines > 24) {
-                $flush();
-            }
             foreach ($ordered as $original) {
                 $item = clone $original;
-                $key = $this->applicationKey($item);
-                $showMatter = $lastMatter !== $key;
-                $lines = $invoice->invoice_layout === 'combined' ? $contextLines + 2 : 2 + (int) ceil(mb_strlen($item->matter_text) / 80) + ($showMatter ? $contextLines : 0);
-                if ($page && $units + $lines > 24) {
-                    $flush();
-                    $showMatter = true;
-                    $lines = $invoice->invoice_layout === 'combined' ? $contextLines + 2 : 2 + (int) ceil(mb_strlen($item->matter_text) / 80) + $contextLines;
-                }
-                $item->setAttribute('show_matter', $showMatter);
                 $item->setAttribute('matter_index', $groupIndex + 1);
                 $item->setAttribute('group_title', $ordered->first()->matter_text);
-                $page[] = $item;
-                $units += $lines;
-                $running = bcadd($running, $item->amount, 2);
-                $lastMatter = $key;
+                $items[] = $item;
             }
         }
-        if ($page || ! $pages) {
-            $pages[] = ['items' => $page, 'brought' => $brought, 'carried' => $running, 'last' => true];
-        } else {
-            $pages[array_key_last($pages)]['last'] = true;
-        }
-        if ($units > max(2, 18 - count($invoice->additional_charges ?? []) * 2)) {
-            $pages[array_key_last($pages)]['last'] = false;
-            $pages[] = ['items' => [], 'brought' => $running, 'carried' => $running, 'last' => true];
-        }
+
+        $pages = [];
+        $offset = 0;
+        $brought = '0.00';
+        do {
+            $remaining = count($items) - $offset;
+            $first = $pages === [];
+            $final = $this->page(array_slice($items, $offset), $brought, $first, true);
+            if ($this->fits($viewData, $final)) {
+                $pages[] = $final;
+                break;
+            }
+            if ($remaining === 0) {
+                throw ValidationException::withMessages(['items' => 'Invoice totals and payment instructions exceed one page. Shorten the instructions or charge labels.']);
+            }
+
+            $low = 1;
+            $high = $remaining;
+            $fit = 0;
+            while ($low <= $high) {
+                $count = intdiv($low + $high, 2);
+                $candidate = $this->page(array_slice($items, $offset, $count), $brought, $first, false);
+                if ($this->fits($viewData, $candidate)) {
+                    $fit = $count;
+                    $low = $count + 1;
+                } else {
+                    $high = $count - 1;
+                }
+            }
+            if ($fit === 0) {
+                throw ValidationException::withMessages(['items' => 'A matter description is too long to fit on an invoice page. Shorten its text or identifiers.']);
+            }
+
+            // Keep a complete matter together when it fits; oversized matters continue with their context repeated.
+            if ($offset + $fit < count($items)) {
+                $nextMatter = $items[$offset + $fit]->matter_index;
+                $boundary = $fit;
+                while ($boundary > 0 && $items[$offset + $boundary - 1]->matter_index === $nextMatter) {
+                    $boundary--;
+                }
+                if ($boundary > 0) {
+                    $fit = $boundary;
+                }
+            }
+            $page = $this->page(array_slice($items, $offset, $fit), $brought, $first, false);
+            $pages[] = $page;
+            $brought = $page['carried'];
+            $offset += $fit;
+        } while (true);
 
         return $pages;
+    }
+
+    private function page(array $items, string $brought, bool $first, bool $last): array
+    {
+        $previous = null;
+        $carried = $brought;
+        $rows = [];
+        foreach ($items as $original) {
+            $item = clone $original;
+            $item->setAttribute('show_matter', $previous !== $item->matter_index);
+            $previous = $item->matter_index;
+            $carried = bcadd($carried, $item->amount, 2);
+            $rows[] = $item;
+        }
+
+        return ['items' => $rows, 'brought' => $brought, 'carried' => $carried, 'first' => $first, 'last' => $last];
+    }
+
+    private function fits(array $viewData, array $page): bool
+    {
+        $pdf = $this->document($viewData + ['pages' => [$page]]);
+        $pdf->render();
+
+        return $pdf->getDomPDF()->getCanvas()->get_page_count() === 1;
+    }
+
+    private function viewData(Invoice $invoice): array
+    {
+        return ['invoice' => $invoice->load(['items', 'client', 'bankAccount', 'gateway']), 'logo' => $this->image('logo'), 'signature' => $this->image('signature'), 'settings' => Setting::pluck('value', 'key')->all()];
+    }
+
+    private function document(array $viewData): \Barryvdh\DomPDF\PDF
+    {
+        return Pdf::loadView('pdf.invoice', $viewData)->setPaper('a4')->setOptions(['isRemoteEnabled' => false, 'defaultFont' => 'DejaVu Sans']);
     }
 
     private function applicationKey(InvoiceItem $item): string
@@ -98,7 +141,9 @@ class PdfService
 
     public function render(Invoice $invoice): string
     {
-        return Pdf::loadView('pdf.invoice', ['invoice' => $invoice->load(['items', 'client', 'bankAccount', 'gateway']), 'logo' => $this->image('logo'), 'signature' => $this->image('signature'), 'pages' => $this->pages($invoice), 'settings' => Setting::pluck('value', 'key')->all()])->setPaper('a4')->setOptions(['isRemoteEnabled' => false, 'defaultFont' => 'DejaVu Sans'])->output();
+        $viewData = $this->viewData($invoice);
+
+        return $this->document($viewData + ['pages' => $this->pages($invoice, $viewData)])->output();
     }
 
     public function save(Invoice $invoice): void
