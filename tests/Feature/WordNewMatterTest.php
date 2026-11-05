@@ -28,7 +28,7 @@ beforeEach(function () {
     $this->client = Client::create(['name' => 'Client from master', 'ref_no' => '1256', 'client_type' => 'Foreign', 'country' => 'USA', 'address' => 'Saved master address', 'default_currency' => 'USD']);
     $this->para = Paralegal::create(['name' => 'Seema']);
 });
-function newMatterWord(array $rows, bool $splitFee = false): string
+function newMatterWord(array $rows, bool $splitFee = false, ?array $headers = null): string
 {
     $word = new PhpWord;
     $section = $word->addSection();
@@ -37,7 +37,7 @@ function newMatterWord(array $rows, bool $splitFee = false): string
     $section->addText('Date: 29-10-2026');
     $section->addText('Client Ref No: 1256');
     $table = $section->addTable();
-    foreach (array_merge([WordService::HEADERS], $rows) as $index => $row) {
+    foreach (array_merge([$headers ?? WordService::HEADERS], $rows) as $index => $row) {
         $table->addRow();
         foreach ($row as $column => $value) {
             $cell = $table->addCell(1200);
@@ -62,6 +62,7 @@ it('reads the client reference from the master and creates reviewed new matters 
     ], true);
     try {
         $this->post('/crm/word/preview', ['client_ref' => '1256', 'file' => new UploadedFile($path, 'filled.docx', null, null, true)])->assertRedirect('/admin/word-upload')->assertSessionHas('word_preview.errors', []);
+        $this->get('/admin/word-upload')->assertOk()->assertSee('Fee summary')->assertSee('2 matter / application(s)')->assertSee('Fees before GST')->assertSee('980.00');
         expect(Matter::count())->toBe(0)->and(Invoice::count())->toBe(0)->and(session('word_preview.missing_matters'))->toHaveCount(2)->and(session('word_preview.client.name'))->toBe('Client from master')->and(session('word_preview.currency'))->toBe('USD');
         $this->post('/crm/word/create')->assertRedirect('/admin/invoices');
         expect(Matter::count())->toBe(2)->and(Invoice::sole()->grand_total)->toBe('980.00')->and(Invoice::sole()->client->address)->toBe('Saved master address');
@@ -187,4 +188,26 @@ it('creates separate application entries with a repeated ref in the manual invoi
             ['ref_no' => 'P25125603US', 'app_no' => 'APP-B', 'fee_type' => 'Official + Professional Fees', 'qty' => 1, 'rate' => 490],
         ])->callMountedAction()->assertHasNoActionErrors();
     expect(Invoice::sole()->items->pluck('app_no')->all())->toBe(['APP-A', 'APP-B'])->and(Invoice::sole()->grand_total)->toBe('980.00');
+});
+
+it('accepts header case and nonbreaking spacing introduced by Word editors', function () {
+    $headers = array_map(fn ($header) => mb_strtoupper(str_replace(' ', "\u{00A0}  ", $header)), WordService::HEADERS);
+    $path = newMatterWord([['DEMO', 'P25125601US', 'APP-A', '', 'Demo filing', 'Official + Professional Fees', '', '100', 'USD']], false, $headers);
+    try {
+        $parsed = app(WordService::class)->parse($path, $this->admin);
+        expect($parsed['errors'])->toBe([])->and($parsed['rows'])->toHaveCount(1);
+    } finally {
+        unlink($path);
+    }
+});
+
+it('still rejects unrelated document headers with an actionable message', function () {
+    $path = newMatterWord([], false, ['PRINCIPAL', 'AGENT']);
+    try {
+        $parsed = app(WordService::class)->parse($path, $this->admin);
+        expect($parsed['errors'][0]['error'])->toContain('Download the Combined, Detailed or India GST template');
+        expect($parsed['rows'])->toBe([]);
+    } finally {
+        unlink($path);
+    }
 });

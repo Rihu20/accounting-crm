@@ -71,11 +71,12 @@ class WordService
 
             return $out;
         }
-        $headers = array_map(fn ($c) => trim($this->text($c)), $rows[0]->getCells());
+        $normalizeHeader = fn (string $header): string => mb_strtolower(trim(preg_replace('/[\s\x{00A0}\x{202F}]+/u', ' ', $header)));
+        $headers = array_map(fn ($c) => $normalizeHeader($this->text($c)), $rows[0]->getCells());
         $legacyHeaders = self::LEGACY_HEADERS;
         $legacyHeaders[0] = 'Ref No';
-        if ($headers !== self::HEADERS && $headers !== self::LEGACY_HEADERS && $headers !== $legacyHeaders) {
-            $out['errors'][] = ['row' => 1, 'error' => 'Required headers: '.implode(', ', self::HEADERS)];
+        if ($headers !== array_map($normalizeHeader, self::HEADERS) && $headers !== array_map($normalizeHeader, self::LEGACY_HEADERS) && $headers !== array_map($normalizeHeader, $legacyHeaders)) {
+            $out['errors'][] = ['row' => 1, 'error' => 'This is not a supported matter fee table. Download the Combined, Detailed or India GST template from this page. Required headers: '.implode(', ', self::HEADERS)];
 
             return $out;
         }

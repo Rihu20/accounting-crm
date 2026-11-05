@@ -13,6 +13,26 @@
 <label>Invoice format<select name="invoice_layout"><option value="auto">Detect from Word file</option>@foreach(\App\Services\InvoiceFormat::LABELS as $key=>$label)<option value="{{ $key }}">{{ $label }}</option>@endforeach</select></label>
 <label>Paralegal fee file (.docx, up to 10 MB)<input name="file" type="file" accept=".docx" required></label><p>Reference example: P25124809KR. Do not enter GST as an extra fee row; CRM calculates it once.</p><div><button class="crm-btn">Upload and validate</button></div></form></section>
 @if($preview)<section class="crm-card"><h3>Validation results</h3>@if($preview['invoice_layout']??null)<p><strong>Format: {{ \App\Services\InvoiceFormat::LABELS[$preview['invoice_layout']] }}</strong></p>@endif @if($preview['client']??null)<div class="crm-card"><strong>Client: {{ $preview['client']['ref_no'] }} — {{ $preview['client']['name'] }}</strong><p>{{ $preview['client']['address'] }}</p><p>{{ $preview['client']['country'] }} · {{ $preview['currency'] }} @if($preview['client']['gstin'])· GSTIN: {{ $preview['client']['gstin'] }}@endif</p></div>@endif @foreach($preview['warnings'] as $w)<p>{{ $w }}</p>@endforeach @foreach($preview['errors'] as $e)<div class="crm-error">Row {{ $e['row'] }}: {{ $e['error'] }}</div>@endforeach
+@if(!empty($preview['rows']) && empty($preview['errors']))
+@php
+    $feeSummary = [];
+    $feeTotal = '0.00';
+    $matterCount = collect($preview['rows'])->map(fn ($row) => json_encode([$row['matter_ref'] ?? $row['ref_no'], $row['app_no'] ?? null, $row['pct_no'] ?? null]))->unique()->count();
+    foreach ($preview['rows'] as $row) {
+        $feeSummary[$row['fee_type']] = bcadd($feeSummary[$row['fee_type']] ?? '0.00', (string) $row['rate'], 2);
+        $feeTotal = bcadd($feeTotal, (string) $row['rate'], 2);
+    }
+@endphp
+<section class="crm-card" style="margin:16px 0">
+    <h3>Fee summary</h3>
+    <p>{{ $matterCount }} matter / application(s) � {{ count($preview['rows']) }} fee row(s)</p>
+    @foreach($feeSummary as $feeType => $amount)
+        <div class="crm-row"><span>{{ $feeType }}</span><strong>{{ \App\Services\Money::format($amount, $preview['currency']) }}</strong></div>
+    @endforeach
+    <div class="crm-row"><strong>Fees before GST</strong><strong>{{ \App\Services\Money::format($feeTotal, $preview['currency']) }}</strong></div>
+    <p>Review the fee breakdown before creating the draft. Applicable GST is calculated in the draft invoice.</p>
+</section>
+@endif
 <div class="crm-scroll"><table class="crm-table"><tr><th>Your Ref No</th><th>Our Ref No</th><th>App No</th><th>PCT No</th><th>Matter</th><th>Fee type</th><th>Amount</th></tr>@foreach($preview['rows'] as $r)<tr><td>{{ $r['your_ref']??'' }}</td><td>{{ $r['matter_ref']??$r['ref_no'] }}</td><td>{{ $r['app_no']??'' }}</td><td>{{ $r['pct_no']??'' }}</td><td>{{ $r['matter_text'] }}</td><td>{{ $r['fee_type'] }}</td><td>{{ $r['rate'] }} {{ $preview['currency'] }}</td></tr>@endforeach</table></div>
 @if(($preview['invoice_layout']??null)==='india_gst')<p>GST will be added only on Professional Fees at the configured rate. Official Fees are excluded from the GST base.</p>@endif
 @if(!empty($preview['missing_matters']))<h3>New matters for review</h3><p>These references are not in the master yet. Confirming the draft will create them for this client and paralegal.</p><div class="crm-scroll"><table class="crm-table"><tr><th>Our Ref No</th><th>App No</th><th>PCT No</th><th>Matter</th><th>Country</th></tr>@foreach($preview['missing_matters'] as $matter)<tr><td>{{ $matter['our_ref'] }}</td><td>{{ $matter['app_no']??'' }}</td><td>{{ $matter['pct_no']??'' }}</td><td>{{ $matter['matter_title'] }}</td><td>{{ $matter['country'] }}</td></tr>@endforeach</table></div>@endif
