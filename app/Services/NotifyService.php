@@ -29,7 +29,7 @@ class NotifyService
 
     public function paralegals(Invoice $invoice, string $title, string $body): void
     {
-        foreach ($invoice->items()->with('matter.paralegal.user')->get()->pluck('matter.paralegal.user')->filter()->unique('id') as $u) {
+        foreach ($invoice->items()->with('matter.paralegal.user')->get()->pluck('matter.paralegal.user')->push($invoice->paralegal?->user)->filter()->unique('id') as $u) {
             $u->notify(new CrmNotification($title, $body, url('/admin')));
         }
     }

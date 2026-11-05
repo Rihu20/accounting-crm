@@ -8,6 +8,7 @@ use App\Models\Invoice;
 use App\Models\InvoiceConversion;
 use App\Models\Setting;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 
@@ -51,7 +52,7 @@ class InvoiceService
 
     public function recalculate(Invoice $invoice): Invoice
     {
-        InvoiceFormat::resolve($invoice->invoice_layout, $invoice->client);
+        InvoiceFormat::resolve($invoice->invoice_layout, $invoice->billingClient());
         InvoiceFormat::validateRows($invoice->invoice_layout, $invoice->items()->get()->toArray());
         $sub = '0';
         $dis = '0';
@@ -63,7 +64,7 @@ class InvoiceService
                 $dis = bcadd($dis, $amount, 2);
             } else {
                 $sub = bcadd($sub, $amount, 2);
-            }if ($invoice->client->client_type === 'Indian' && $item->fee_type === 'Professional Fees') {
+            }if ($invoice->billingClient()->client_type === 'Indian' && $invoice->gst_enabled && $item->fee_type === 'Professional Fees') {
                 $tax = bcadd($tax, Money::mul($amount, bcdiv($item->tax_rate, '100', 8)), 2);
             }
         }
@@ -87,7 +88,7 @@ class InvoiceService
     /** Sequential, gap-free serial per series and year (financial year Apr–Mar by default, as GST requires). */
     public function nextNumber(string $series, $date, string $defaultPrefix): string
     {
-        $date = \Illuminate\Support\Carbon::parse($date);
+        $date = Carbon::parse($date);
         $year = (int) $date->format('Y');
         if (Setting::get('year_logic', 'financial') === 'financial' && $date->month < 4) {
             $year--;
@@ -107,8 +108,8 @@ class InvoiceService
         return DB::transaction(function () use ($invoice) {
             $invoice = Invoice::lockForUpdate()->findOrFail($invoice->id);
             abort_unless($invoice->doc_type === 'proforma' && $invoice->status === 'Draft' && $invoice->items()->exists(), 422, 'Only a populated draft can be sent');
-            $client = $invoice->client;
-            abort_if($client->client_type === 'Indian' && blank($client->state), 422, 'Add the state of '.$client->name.' in Clients first – it decides CGST+SGST or IGST (place of supply).');
+            $client = $invoice->billingClient();
+            abort_if($client->client_type === 'Indian' && $invoice->gst_enabled && blank($client->state), 422, 'Add the state of '.$client->name.' in Clients first – it decides CGST+SGST or IGST (place of supply).');
             $invoice->update(['number' => $this->number($invoice), 'status' => 'Sent', 'sent_at' => now()]);
             app(PdfService::class)->save($invoice);
             app(NotifyService::class)->paralegals($invoice, 'Proforma sent', $invoice->number.' is awaiting payment.');

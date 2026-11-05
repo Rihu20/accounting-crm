@@ -15,10 +15,10 @@ class PdfService
     {
         $viewData ??= $this->viewData($invoice);
         $items = [];
-        $groups = $invoice->items()->where('fee_type', '!=', 'Disbursement')->get()->groupBy(fn ($item) => $this->applicationKey($item).($invoice->invoice_layout === 'combined' ? '|'.$item->matter_text : ''));
+        $groups = $invoice->items()->where('fee_type', '!=', 'Disbursement')->get()->groupBy(fn ($item) => $this->applicationKey($item).($invoice->combinedFees() ? '|'.$item->matter_text : ''));
         foreach ($groups->values() as $groupIndex => $group) {
             $ordered = $group->sortBy(fn ($item) => array_search($item->fee_type, ['Official Fees', 'Professional Fees', 'Translation', 'Official + Professional Fees'], true))->values();
-            if ($invoice->invoice_layout === 'combined') {
+            if ($invoice->combinedFees()) {
                 $combined = clone $ordered->first();
                 $combined->amount = $ordered->reduce(fn (string $sum, InvoiceItem $item): string => bcadd($sum, $item->amount, 2), '0.00');
                 $combined->rate = $combined->amount;
@@ -112,7 +112,10 @@ class PdfService
 
     private function viewData(Invoice $invoice): array
     {
-        return ['invoice' => $invoice->load(['items', 'client', 'bankAccount', 'gateway']), 'logo' => $this->image('logo'), 'signature' => $this->image('signature'), 'settings' => Setting::pluck('value', 'key')->all()];
+        $invoice->load(['items', 'client', 'bankAccount', 'gateway']);
+        $invoice->setRelation('client', $invoice->billingClient());
+
+        return ['invoice' => $invoice, 'logo' => $this->image('logo'), 'signature' => $this->image('signature'), 'settings' => Setting::pluck('value', 'key')->all()];
     }
 
     private function document(array $viewData): \Barryvdh\DomPDF\PDF
@@ -122,6 +125,10 @@ class PdfService
 
     private function applicationKey(InvoiceItem $item): string
     {
+        if ($item->entry_key) {
+            return 'manual:'.$item->entry_key;
+        }
+
         return json_encode([$item->matter_id ?: ($item->our_ref ?: $item->ref_no), $item->app_no ?: null, $item->pct_no ?: null]);
     }
 

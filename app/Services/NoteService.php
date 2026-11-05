@@ -7,6 +7,7 @@ use App\Models\InvoiceNote;
 use App\Models\Setting;
 use App\Models\User;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
@@ -32,10 +33,11 @@ class NoteService
             $invoice = Invoice::with('client')->lockForUpdate()->findOrFail($invoice->id);
             abort_unless($invoice->doc_type === 'tax' && $invoice->status === 'Issued', 422, 'Notes can only be raised against an issued tax invoice.');
             abort_unless(bccomp(bcadd($taxable, $other, 2), '0', 2) > 0, 422, 'Enter the note amount.');
-            abort_if($invoice->invoice_date && \Illuminate\Support\Carbon::parse($data['note_date'])->lt($invoice->invoice_date), 422, 'Note date cannot be before the tax invoice date.');
+            abort_if($invoice->invoice_date && Carbon::parse($data['note_date'])->lt($invoice->invoice_date), 422, 'Note date cannot be before the tax invoice date.');
 
-            $indian = $invoice->client->client_type === 'Indian';
-            $rate = $indian ? (string) Setting::get('gst_rate', '18') : '0';
+            $invoice->setRelation('client', $invoice->billingClient());
+            $indian = $invoice->client->client_type === 'Indian' && $invoice->gst_enabled;
+            $rate = $indian ? (string) ($invoice->billing_details ? ($invoice->items()->where('fee_type', 'Professional Fees')->value('tax_rate') ?? '0') : Setting::get('gst_rate', '18')) : '0';
             $gst = $indian ? Money::mul($taxable, bcdiv($rate, '100', 8)) : '0.00';
             $intra = Gst::intraState($invoice->client);
             $cgst = $intra ? Money::round(bcdiv($gst, '2', 4)) : '0.00';
@@ -72,6 +74,7 @@ class NoteService
     public function render(InvoiceNote $note): string
     {
         $note->loadMissing('invoice.client');
+        $note->invoice->setRelation('client', $note->invoice->billingClient());
 
         return Pdf::loadView('pdf.note', [
             'note' => $note,

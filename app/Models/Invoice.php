@@ -15,6 +15,8 @@ class Invoice extends Model
 
     protected $guarded = [];
 
+    protected $attributes = ['gst_enabled' => true, 'combine_fees' => false];
+
     protected static function booted(): void
     {
         static::saving(function (Invoice $invoice): void {
@@ -37,12 +39,27 @@ class Invoice extends Model
 
     protected function casts(): array
     {
-        return ['payment_initiation' => 'array', 'tax_authorization' => 'array', 'payment_intimation_date' => 'date', 'inr_exchange_rate' => 'decimal:8', 'tds_receivable' => 'decimal:2', 'additional_charges' => 'array', 'additional_charges_total' => 'decimal:2', 'invoice_date' => 'date', 'due_date' => 'date', 'received_on' => 'date', 'sent_at' => 'datetime', 'parse_result' => 'array', 'original_items' => 'array', 'extraction_json' => 'array', 'is_active' => 'boolean', 'is_default' => 'boolean', 'subtotal' => 'decimal:2', 'disbursement_total' => 'decimal:2', 'tax_total' => 'decimal:2', 'grand_total' => 'decimal:2', 'amount' => 'decimal:2', 'qty' => 'decimal:2', 'rate' => 'decimal:2', 'tax_rate' => 'decimal:2', 'source_amount' => 'decimal:2', 'converted_amount' => 'decimal:2', 'charges_deducted' => 'decimal:2', 'taxable' => 'boolean'];
+        return ['billing_details' => 'array', 'gst_enabled' => 'boolean', 'combine_fees' => 'boolean', 'payment_initiation' => 'array', 'tax_authorization' => 'array', 'payment_intimation_date' => 'date', 'inr_exchange_rate' => 'decimal:8', 'tds_receivable' => 'decimal:2', 'additional_charges' => 'array', 'additional_charges_total' => 'decimal:2', 'invoice_date' => 'date', 'due_date' => 'date', 'received_on' => 'date', 'sent_at' => 'datetime', 'parse_result' => 'array', 'original_items' => 'array', 'extraction_json' => 'array', 'is_active' => 'boolean', 'is_default' => 'boolean', 'subtotal' => 'decimal:2', 'disbursement_total' => 'decimal:2', 'tax_total' => 'decimal:2', 'grand_total' => 'decimal:2', 'amount' => 'decimal:2', 'qty' => 'decimal:2', 'rate' => 'decimal:2', 'tax_rate' => 'decimal:2', 'source_amount' => 'decimal:2', 'converted_amount' => 'decimal:2', 'charges_deducted' => 'decimal:2', 'taxable' => 'boolean'];
     }
 
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()->logAll()->logOnlyDirty()->dontLogEmptyChanges();
+    }
+
+    public function billingClient(): Client
+    {
+        $client = clone $this->client;
+        if ($this->billing_details) {
+            $client->forceFill($this->billing_details);
+        }
+
+        return $client;
+    }
+
+    public function combinedFees(): bool
+    {
+        return $this->invoice_layout === 'combined' || (bool) $this->combine_fees;
     }
 
     public function client()

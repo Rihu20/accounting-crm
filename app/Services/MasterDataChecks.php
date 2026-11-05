@@ -11,7 +11,7 @@ class MasterDataChecks
     {
         $checks = [];
         foreach ([
-            'reference' => ['Missing client reference', 'Add the four-digit reference before uploading matter fees.'],
+            'reference' => ['Missing client reference', 'Optional for a manual proforma. Add a reference later when one is assigned.'],
             'address' => ['Missing billing address', 'Add the billing address before issuing an invoice.'],
             'currency' => ['Review Indian client currency', 'This Indian client defaults to a foreign currency. Review the intended billing currency.'],
             'state' => ['Missing Indian place of supply', 'Add a state or state code so the GST split can be determined.'],

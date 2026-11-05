@@ -2,6 +2,7 @@
 
 use App\Filament\Pages\WordUpload;
 use App\Filament\Resources\InvoiceResource\Pages\ManageRecords;
+use App\Models\BankAccount;
 use App\Models\Client;
 use App\Models\Invoice;
 use App\Models\Matter;
@@ -184,9 +185,9 @@ it('creates separate application entries with a repeated ref in the manual invoi
     Livewire::test(ManageRecords::class)->mountAction('create')
         ->set('mountedActions.0.data.client_id', $this->client->id)->set('mountedActions.0.data.invoice_layout', 'combined')->set('mountedActions.0.data.currency', 'USD')
         ->set('mountedActions.0.data.items', [
-            ['ref_no' => 'P25125603US', 'app_no' => 'APP-A', 'fee_type' => 'Official + Professional Fees', 'qty' => 1, 'rate' => 490],
-            ['ref_no' => 'P25125603US', 'app_no' => 'APP-B', 'fee_type' => 'Official + Professional Fees', 'qty' => 1, 'rate' => 490],
-        ])->callMountedAction()->assertHasNoActionErrors();
+            ['work' => 'Filing', 'our_ref' => 'P25125603US', 'app_no' => 'APP-A', 'combined_amount' => 490],
+            ['work' => 'Filing', 'our_ref' => 'P25125603US', 'app_no' => 'APP-B', 'combined_amount' => 490],
+        ])->set('mountedActions.0.data.bank_account_id', BankAccount::where('currency', 'USD')->value('id'))->callMountedAction()->assertHasNoActionErrors();
     expect(Invoice::sole()->items->pluck('app_no')->all())->toBe(['APP-A', 'APP-B'])->and(Invoice::sole()->grand_total)->toBe('980.00');
 });
 

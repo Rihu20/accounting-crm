@@ -1,6 +1,7 @@
 <?php
 
 use App\Filament\Resources\InvoiceResource\Pages\ManageRecords;
+use App\Models\BankAccount;
 use App\Models\Client;
 use App\Models\Invoice;
 use App\Models\Matter;
@@ -61,8 +62,8 @@ it('rejects invalid extra charges without creating an invoice', function () {
 it('creates a draft with custom charges from the CRM form', function () {
     Livewire::test(ManageRecords::class)->mountAction('create')
         ->set('mountedActions.0.data.client_id', $this->client->id)->set('mountedActions.0.data.invoice_layout', 'detailed')->set('mountedActions.0.data.currency', 'USD')
-        ->set('mountedActions.0.data.items', [['ref_no' => 'P25124809KR', 'fee_type' => 'Professional Fees', 'rate' => 500, 'qty' => 1]])
-        ->set('mountedActions.0.data.additional_charges', $this->charges)->callMountedAction()->assertHasNoActionErrors();
+        ->set('mountedActions.0.data.items', [['work' => 'Professional services', 'professional_amount' => 500]])
+        ->set('mountedActions.0.data.bank_account_id', BankAccount::where('currency', 'USD')->value('id'))->set('mountedActions.0.data.additional_charges', $this->charges)->callMountedAction()->assertHasNoActionErrors();
     expect(Invoice::sole()->grand_total)->toBe('525.50');
 });
 it('paginates a long list of custom charges and escapes charge labels', function () {

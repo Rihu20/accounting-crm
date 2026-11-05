@@ -18,7 +18,7 @@ class User extends Authenticatable implements FilamentUser, HasAvatar
 
     public function getActivitylogOptions(): LogOptions
     {
-        return LogOptions::defaults()->logOnly(['name', 'email', 'is_active'])->logOnlyDirty()->dontLogEmptyChanges();
+        return LogOptions::defaults()->logOnly(['name', 'email', 'is_active', 'can_create_proforma'])->logOnlyDirty()->dontLogEmptyChanges();
     }
 
     protected $guarded = [];
@@ -29,7 +29,7 @@ class User extends Authenticatable implements FilamentUser, HasAvatar
 
     protected function casts(): array
     {
-        return ['password' => 'hashed', 'is_active' => 'boolean'];
+        return ['password' => 'hashed', 'is_active' => 'boolean', 'can_create_proforma' => 'boolean'];
     }
 
     public function canAccessPanel(Panel $panel): bool

@@ -7,7 +7,6 @@ use App\Models\Expense;
 use App\Models\Invoice;
 use App\Models\InvoiceNote;
 use App\Models\Payment;
-use App\Models\Setting;
 use Illuminate\Support\Carbon;
 
 /** Accountant / Director reports. Amounts are always kept per currency. */
@@ -106,7 +105,7 @@ class ReportService
         $invoices = Invoice::with(['client', 'taxInvoice'])->whereIn('id', $withTds->pluck('invoice_id')->unique())->get()->keyBy('id');
         foreach ($withTds as $p) {
             $invoice = $invoices->get($p->invoice_id);
-            $client = $invoice?->client;
+            $client = $invoice?->billingClient();
             $receipts[] = [
                 $p->received_on->format('d.m.Y'), $p->txn_ref, $invoice?->number, $invoice?->taxInvoice?->number, $client?->name,
                 $client?->gstin ?? '', $p->currency, (string) $p->amount, (string) $p->tds_amount,
@@ -234,7 +233,7 @@ class ReportService
 
         $invoices = [['Section', 'Invoice No', 'Invoice Date', 'Client', 'GSTIN', 'Place of Supply', 'Currency', 'Invoice Value (FC)', 'INR Rate', 'Invoice Value (INR)', 'Taxable Value (INR)', 'Non-GST / Official Fees (INR)', 'GST Rate %', 'IGST', 'CGST', 'SGST', 'LUT / Remarks']];
         foreach (Invoice::with(['client', 'items'])->where('doc_type', 'tax')->where('status', 'Issued')->whereBetween('invoice_date', [$start->toDateString(), $end->toDateString()])->orderBy('number')->get() as $i) {
-            $client = $i->client;
+            $client = $i->billingClient();
             $export = Gst::isExport($client);
             $rate = $i->currency === 'INR' ? '1' : ($i->inr_exchange_rate ? (string) $i->inr_exchange_rate : null);
             $inr = fn (string $v) => $rate ? Money::mul($v, $rate) : '';
@@ -251,11 +250,13 @@ class ReportService
             $intra = Gst::intraState($client);
             $tax = (string) $i->tax_total;
             $half = Money::round(bcdiv($tax, '2', 4));
+            $savedRates = $i->items->where('fee_type', 'Professional Fees')->pluck('tax_rate')->unique()->values();
+            $reportGstRate = $export || ! $i->gst_enabled ? '0' : ($savedRates->count() === 1 ? (string) $savedRates->first() : ($savedRates->isEmpty() ? '0' : 'Mixed'));
             $section = $export ? 'EXPWOP' : (filled($client->gstin) ? 'B2B' : (bccomp((string) $i->grand_total, '250000', 2) > 0 && ! $intra ? 'B2CL' : 'B2CS'));
             $invoices[] = [
                 $section, $i->number, $i->invoice_date->format('d.m.Y'), $client->name, $client->gstin ?: '', Gst::placeOfSupply($client), $i->currency,
                 (string) $i->grand_total, $rate ?? 'RATE NEEDED', $inr((string) $i->grand_total), $inr($taxable), $inr($other),
-                $export ? '0' : (string) Setting::get('gst_rate', '18'),
+                $reportGstRate,
                 $intra ? '0.00' : $inr($tax), $intra ? $inr($half) : '0.00', $intra ? $inr(bcsub($tax, $half, 2)) : '0.00',
                 $export ? Gst::lutLine() : '',
             ];

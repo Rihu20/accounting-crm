@@ -12,6 +12,9 @@ class FolderService
     public function ensureForTaxInvoice(Invoice $invoice): void
     {
         $disk = Storage::disk(config('crm.disk'));
+        if (! $invoice->items()->whereNotNull('matter_id')->exists()) {
+            Document::firstOrCreate(['invoice_id' => $invoice->id, 'path' => $invoice->pdf_path], ['type' => 'tax_invoice', 'name' => $invoice->number.'.pdf', 'uploaded_by' => $invoice->created_by]);
+        }
         foreach ($invoice->items()->with('matter.paralegal')->get()->pluck('matter')->filter()->unique('id') as $matter) {
             $name = preg_replace('/[^\pL\pN _-]/u', '_', $matter->paralegal->name);
             $path = 'Paralegals/'.$name.'/'.preg_replace('/[^A-Za-z0-9_-]/', '_', $matter->our_ref ?: $matter->ref_no).'/'.$invoice->invoice_date->format('d.m.y');

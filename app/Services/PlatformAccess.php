@@ -93,6 +93,9 @@ class PlatformAccess
         if (array_key_exists($module, config('platform.modules')) && ! config('platform.modules.'.$module)) {
             return false;
         }
+        if ($permission === 'accounting.invoices.create' && $user->can_create_proforma) {
+            return true;
+        }
         foreach (self::matrix() as $role => $grants) {
             if (in_array($permission, $grants, true) && $user->hasRole($role)) {
                 return true;
