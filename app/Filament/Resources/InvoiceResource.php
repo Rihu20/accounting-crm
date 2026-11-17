@@ -32,6 +32,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class InvoiceResource extends CrmResource
 {
@@ -259,8 +260,8 @@ class InvoiceResource extends CrmResource
                     }),
                 Action::make('order')->label('Generate Tax Invoice')->icon('heroicon-o-document-check')->color('success')
                     ->visible(fn (Invoice $record) => auth()->user()->allowed('accounting.tax.issue') && $record->doc_type === 'proforma' && $record->status === 'Received' && (($record->tax_authorization['status'] ?? null) === 'Approved' || (PortalWorkflow::canAuthorizeTax(auth()->user()) && ! in_array($record->tax_authorization['status'] ?? null, ['Pending', 'Rejected']))))
-                    ->schema([DatePicker::make('invoice_date')->label('Tax invoice date')->default(today())->required()])->requiresConfirmation()
-                    ->action(fn ($record, array $data) => app(InvoiceService::class)->orderTax($record, $data['invoice_date'], auth()->user())),
+                    ->schema([DatePicker::make('invoice_date')->label('Tax invoice date')->default(today())->required()->maxDate(today())->minDate(fn ($record) => $record->received_on)])->requiresConfirmation()
+                    ->action(fn ($record, array $data, Action $action) => self::explainRefusal($action, fn () => app(InvoiceService::class)->orderTax($record, $data['invoice_date'], auth()->user()))),
                 EditAction::make()->visible(fn (Model $record) => self::canEdit($record))->using(fn (Model $record, array $data) => app(OptimisticUpdate::class)->save($record, $data))->after(fn ($record) => app(InvoiceService::class)->recalculate($record)),
                 Action::make('send')->label('Finalise proforma')->icon('heroicon-o-lock-closed')->requiresConfirmation()->visible(fn ($record) => auth()->user()->allowed('accounting.invoices.finalise') && $record->status === 'Draft')->action(fn ($record) => app(InvoiceService::class)->send($record)),
                 Action::make('convert')->label('Convert currency')->icon('heroicon-o-arrows-right-left')->visible(fn ($record) => auth()->user()->allowed('accounting.invoices.finalise') && $record->status === 'Draft')->schema([Select::make('currency')->options(['USD' => 'USD', 'INR' => 'INR', 'EUR' => 'EUR'])->required(), TextInput::make('rate')->numeric()->minValue(0.00000001)->required(), DatePicker::make('rate_date')->default(today())->required(), Select::make('rate_source')->options(['RBI reference rate' => 'RBI reference rate', 'Bank rate' => 'Bank rate', 'Manual' => 'Manual'])->required()])->action(fn ($record, array $data) => app(InvoiceService::class)->convert($record, $data['currency'], (string) $data['rate'], $data['rate_date'], $data['rate_source'], auth()->user())),
@@ -277,9 +278,17 @@ class InvoiceResource extends CrmResource
                 Action::make('payment_history')->label('Payment history')->icon('heroicon-o-banknotes')->visible($pay)->modalHeading('Payments')->modalContent(fn ($record) => view('filament.parts.payment-history', ['invoice' => $record]))->modalSubmitAction(false)->modalCancelActionLabel('Close'),
                 Action::make('write_off')->label('Settle short payment')->icon('heroicon-o-scissors')->color('warning')
                     ->visible(fn ($record) => auth()->user()->allowed('payments.mark_received') && $record->doc_type === 'proforma' && $record->status === 'Partially received')
-                    ->modalDescription(fn ($record) => 'Balance '.Money::format($record->outstandingAmount(), $record->currency).' will be written off and the proforma marked Received.')
+                    ->modalDescription(fn ($record) => 'Balance '.Money::format($record->outstandingAmount(), $record->currency).' will be written off and the proforma marked Received.'.(bccomp($record->outstandingAmount(), PaymentService::writeOffLimit($record), 2) > 0 ? ' This is above the write-off limit of '.PaymentService::writeOffLimitPercent().'% ('.Money::format(PaymentService::writeOffLimit($record), $record->currency).'), so only the Director can settle it.' : ''))
                     ->schema([Textarea::make('reason')->label('Reason (e.g. bank charges deducted by remitter)')->required()->maxLength(500)])
-                    ->action(fn ($record, array $data) => app(PaymentService::class)->writeOff($record, $data['reason'], auth()->user())),
+                    ->action(fn ($record, array $data, Action $action) => self::explainRefusal($action, fn () => app(PaymentService::class)->writeOff($record, $data['reason'], auth()->user()))),
+                Action::make('reverse_payment')->label('Reverse one payment entry')->icon('heroicon-o-arrow-uturn-down')->color('danger')
+                    ->visible(fn ($record) => auth()->user()->allowed('payments.mark_received') && $record->doc_type === 'proforma' && in_array($record->status, ['Received', 'Partially received']))
+                    ->modalDescription('Only the chosen entry is reversed. The other payments on this proforma stay as they are.')
+                    ->schema([
+                        Select::make('payment_id')->label('Payment entry')->required()->options(fn ($record) => $record->payments()->where('reversed', false)->orderBy('received_on')->get()->mapWithKeys(fn ($payment) => [$payment->id => $payment->received_on->format('d.m.Y').' · '.($payment->entry_type === 'write_off' ? 'Write-off '.Money::format($payment->write_off_amount, $payment->currency) : 'Receipt '.Money::format($payment->amount, $payment->currency)).' · '.$payment->txn_ref])),
+                        Textarea::make('reason')->required()->maxLength(500),
+                    ])
+                    ->action(fn ($record, array $data, Action $action) => self::explainRefusal($action, fn () => app(PaymentService::class)->reversePayment($record->payments()->findOrFail($data['payment_id']), $data['reason'], auth()->user()))),
                 Action::make('revert')->label('Revert payment status')->icon('heroicon-o-arrow-uturn-left')->color('danger')->visible(fn ($record) => auth()->user()->allowed('payments.mark_received') && in_array($record->status, ['Received', 'Partially received']))->schema([Textarea::make('reason')->required()])->action(fn ($record, array $data) => app(PaymentService::class)->revert($record, $data['reason'], auth()->user())),
             ])->tooltip('Actions')->icon('heroicon-m-ellipsis-vertical')->iconButton()->color('gray'),
         ], position: RecordActionsPosition::BeforeColumns)->defaultSort('created_at', 'desc')->defaultPaginationPageOption(25)
@@ -310,7 +319,7 @@ class InvoiceResource extends CrmResource
             ->modalDescription(fn ($record) => 'Balance due: '.Money::format($record->outstandingAmount(), $record->currency))
             ->fillForm(fn ($record) => ['received_on' => today()->toDateString(), 'amount' => $record->outstandingAmount(), 'tds_amount' => '0', 'currency' => $record->currency, 'bank_account_id' => $record->bank_account_id, 'gateway_id' => $record->gateway_id, 'charges_deducted' => '0'])
             ->schema([
-                DatePicker::make('received_on')->required(),
+                DatePicker::make('received_on')->required()->maxDate(today()),
                 TextInput::make('currency')->readOnly()->required(),
                 TextInput::make('amount')->label('Amount received (gross)')->numeric()->minValue(0)->required()->helperText('Before bank charges. Enter less for a part payment.'),
                 TextInput::make('tds_amount')->label('TDS deducted by client')->numeric()->minValue(0)->default(0)->helperText('Indian clients: TDS u/s 194J counts towards settling the invoice.'),
@@ -318,11 +327,29 @@ class InvoiceResource extends CrmResource
                 Select::make('gateway_id')->label('Payment gateway')->options(PaymentGateway::where('is_active', true)->pluck('name', 'id'))->requiredWithout('bank_account_id'),
                 TextInput::make('txn_ref')->label('Transaction reference')->required()->maxLength(255),
                 TextInput::make('charges_deducted')->label('Bank / gateway charges')->numeric()->minValue(0)->default(0),
+                TextInput::make('inr_amount')->label('INR credited in bank')->numeric()->minValue(0)->visible(fn ($record) => $record->currency !== 'INR')->helperText('Rupees actually credited, from the bank advice / FIRC. Can be left blank.'),
                 TextInput::make('sender_name')->maxLength(255),
                 Textarea::make('payment_advice')->label('Payment advice / invoices covered')->maxLength(4000),
                 Textarea::make('notes')->maxLength(4000),
             ])
-            ->action(fn ($record, array $data) => app(PaymentService::class)->receive($record, $data, auth()->user()));
+            ->action(fn ($record, array $data, Action $action) => self::explainRefusal($action, fn () => app(PaymentService::class)->receive($record, $data, auth()->user())));
+    }
+
+    /**
+     * A business rule that says no (duplicate reference, write-off limit, date before payment) comes back as a 4xx.
+     * Show its reason to the user and keep the form open, instead of an error page that hides the reason when debug is off.
+     */
+    public static function explainRefusal(Action $action, callable $work): void
+    {
+        try {
+            $work();
+        } catch (HttpException $refusal) {
+            if ($refusal->getStatusCode() >= 500) {
+                throw $refusal;
+            }
+            Notification::make()->title($refusal->getMessage() ?: 'This could not be done.')->danger()->persistent()->send();
+            $action->halt();
+        }
     }
 
     public static function noteAction(string $type): Action

@@ -33,6 +33,7 @@ class SettingResource extends CrmResource
             'company_email' => 'Accounts email', 'company_mobile' => 'Mobile', 'company_phone' => 'Landline', 'terms' => 'Terms & conditions (invoice footer)',
             'gst_rate' => 'GST rate % on professional fees', 'tax_prefix' => 'Tax invoice prefix', 'proforma_prefix' => 'Proforma prefix', 'credit_note_prefix' => 'Credit note prefix', 'debit_note_prefix' => 'Debit note prefix',
             'sequence_padding' => 'Number digits', 'year_logic' => 'Numbering year (financial / calendar)', 'followup_days' => 'First payment follow-up after (days)', 'followup_repeat_days' => 'Repeat follow-up every (days)',
+            'write_off_limit_percent' => 'Short payment write-off limit (% of invoice) – above it only the Director', 'round_off_inr' => 'Round rupee invoices to the nearest rupee (yes / no)',
             'lut_arn' => 'LUT ARN (printed on export invoices)', 'lut_valid_upto' => 'LUT valid up to', 'signature_company_name' => 'Name above signature', 'logo_path' => 'Logo file', 'signature_path' => 'Signature file',
         ];
 

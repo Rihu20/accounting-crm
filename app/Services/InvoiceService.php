@@ -73,7 +73,13 @@ class InvoiceService
             $extra = bcadd($extra, (string) $charge['amount'], 2);
         }
         $total = bcadd(bcadd(bcadd($sub, $dis, 2), $tax, 2), $extra, 2);
-        $invoice->update(['additional_charges_total' => $extra, 'subtotal' => $sub, 'disbursement_total' => $dis, 'tax_total' => $tax, 'grand_total' => $total, 'amount_in_words' => Money::words($total, $invoice->currency)]);
+        $roundOff = '0.00';
+        if ($invoice->currency === 'INR' && Setting::get('round_off_inr', 'no') === 'yes') {
+            $rupees = bcadd($total, '0.5', 0).'.00';
+            $roundOff = bcsub($rupees, $total, 2);
+            $total = $rupees;
+        }
+        $invoice->update(['round_off' => $roundOff, 'additional_charges_total' => $extra, 'subtotal' => $sub, 'disbursement_total' => $dis, 'tax_total' => $tax, 'grand_total' => $total, 'amount_in_words' => Money::words($total, $invoice->currency)]);
 
         return $invoice->fresh();
     }
@@ -149,11 +155,14 @@ class InvoiceService
     {
         abort_unless($actor->is_active && $actor->allowed('accounting.tax.issue'), 403);
 
-        Validator::make(['date' => $date], ['date' => 'required|date'])->validate();
+        Validator::make(['date' => $date], ['date' => 'required|date|before_or_equal:today'], ['date.before_or_equal' => 'The tax invoice date cannot be in the future.'])->validate();
 
         return DB::transaction(function () use ($proforma, $date, $actor) {
             $proforma = Invoice::lockForUpdate()->findOrFail($proforma->id);
             abort_unless($proforma->doc_type === 'proforma' && $proforma->status === 'Received', 422, 'Full payment must be received before ordering the tax invoice');
+            if ($proforma->received_on && Carbon::parse($date)->toDateString() < $proforma->received_on->toDateString()) {
+                abort(422, 'The tax invoice date cannot be before the payment date ('.$proforma->received_on->format('d.m.Y').').');
+            }
             $authorization = $proforma->tax_authorization;
             // Accountant may issue directly. Everyone else needs Director / Accountant approval first.
             if (! PortalWorkflow::canAuthorizeTax($actor) || in_array($authorization['status'] ?? null, ['Pending', 'Rejected'])) {
