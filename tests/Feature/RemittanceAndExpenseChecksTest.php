@@ -3,6 +3,7 @@
 use App\Filament\Pages\ActivityLog;
 use App\Filament\Pages\DataChecks;
 use App\Filament\Pages\RemittanceForms;
+use App\Filament\Pages\RemittanceRegister;
 use App\Filament\Pages\Workspace;
 use App\Filament\Resources\ExpenseResource\Pages\ManageRecords as ExpensePage;
 use App\Models\Expense;
@@ -81,8 +82,8 @@ it('names the blank bank details and always keeps typed ones on the vendor witho
     $service->prepare($this->bill, ['bank_account' => 'DE89370400440532013000', 'swift' => 'COBADEFF', 'bank_address' => 'Frankfurt'] + $service->defaults($this->bill), $this->accountant);
     expect($this->vendor->fresh())->bank_account->toBe('DE89370400440532013000')->swift->toBe('COBADEFF')->bank_address->toBe('Frankfurt');
 
-    $service->prepare($this->bill, ['bank_address' => '', 'swift' => 'COBADEFF2'] + $service->defaults($this->bill), $this->accountant);
-    expect($this->vendor->fresh())->bank_address->toBe('Frankfurt')->swift->toBe('COBADEFF2');
+    $service->prepare($this->bill, ['bank_address' => '', 'swift' => 'COBADEFFXXX'] + $service->defaults($this->bill), $this->accountant);
+    expect($this->vendor->fresh())->bank_address->toBe('Frankfurt')->swift->toBe('COBADEFFXXX');
 });
 
 it('saves a party paid without a vendor, links the bill and fills its next form from it', function () {
@@ -184,6 +185,100 @@ it('makes a Form A2 straight from the page without a vendor bill', function () {
         ->and(Vendor::where('name', 'Marks & Clerk LLP')->sole())->bank_account->toBe('GB29NWBK60161331926819')->default_currency->toBe('GBP')->country->toBe('United Kingdom');
     expect(fn () => $service->prepare(null, ['currency' => 'INR', 'amount' => '5', 'beneficiary_name' => 'X'] + $service->newFormDefaults(), $this->accountant))->toThrow(ValidationException::class);
     expect(fn () => $service->prepare(null, ['amount' => '5', 'beneficiary_name' => 'X'] + $service->newFormDefaults(), $this->paralegal))->toThrow(HttpException::class);
+});
+
+it('pays several bills with one form and fills the rupee equivalent', function () {
+    $service = app(RemittanceFormService::class);
+    $second = Expense::create(array_replace($this->base, ['amount' => '179.50', 'invoice_date' => today()->subDay()]) + ['vendor_invoice_no' => '699800']);
+    $euro = Expense::create(array_replace($this->base, ['currency' => 'EUR']) + ['vendor_invoice_no' => 'E-1']);
+    expect(RemittanceFormService::billOptions('USD'))->toHaveKeys([$this->bill->id, $second->id])->not->toHaveKey($euro->id);
+
+    $summary = RemittanceFormService::billsSummary([$this->bill->id, $second->id]);
+    expect($summary['amount'])->toBe('1000.00')->and($summary['info'])->toContain('Invoice 699800', 'Invoice 699702 dated', 'our ref P25104305US');
+
+    $made = $service->prepare(null, ['expense_ids' => [$this->bill->id, $second->id], 'amount' => $summary['amount'], 'info' => $summary['info'], 'exchange_rate' => '83.25', 'party' => 'x'] + $service->partyDetails('Harness, Dickey & Pierce') + $service->newFormDefaults(), $this->accountant);
+    expect($made['form']->expenses()->pluck('expenses.id')->sort()->values()->all())->toBe(collect([$this->bill->id, $second->id])->sort()->values()->all())
+        ->and($this->bill->fresh()->a2_prepared_on)->not->toBeNull()->and($second->fresh()->a2_prepared_on)->not->toBeNull()
+        ->and(docxText($made['content']))->toContain('83,250.00 (at 83.25)', 'USD One Thousand Only', 'Invoice 699800')
+        ->and(RemittanceFormService::billOptions('USD'))->not->toHaveKey($this->bill->id);
+    expect(docxText($service->prepare($euro, $service->defaults($euro), $this->accountant)['content']))->toContain('Equivalent to Rupees. _____');
+
+    expect(fn () => $service->prepare(null, ['expense_ids' => [$euro->id], 'amount' => '1', 'beneficiary_name' => 'X'] + $service->newFormDefaults(), $this->accountant))
+        ->toThrow(ValidationException::class, 'is not a USD vendor bill');
+});
+
+it('asks for an IBAN where the bank needs one, checks SWIFT codes and knows the purpose codes', function () {
+    $service = app(RemittanceFormService::class);
+    $try = fn (array $data) => $service->prepare(null, $data + ['amount' => '10', 'beneficiary_name' => 'Kanzlei GmbH'] + $service->newFormDefaults('EUR'), $this->accountant);
+
+    expect(fn () => $try(['country' => 'Germany', 'bank_account' => '123456789']))->toThrow(ValidationException::class, 'IBAN is mandatory for Germany');
+    expect(fn () => $try(['country' => 'germany', 'bank_account' => 'DE89 3704 0044 0532 0130 01']))->toThrow(ValidationException::class, 'IBAN');
+    expect($try(['country' => 'Germany', 'bank_account' => 'DE89 3704 0044 0532 0130 00', 'swift' => 'cobadeff'])['missing'])->not->toContain('SWIFT code')
+        ->and($try(['country' => 'United States', 'bank_account' => '123', 'swift' => '021000021'])['form']->exists)->toBeTrue();
+    expect(fn () => $try(['country' => 'Japan', 'swift' => 'MIZUHO']))->toThrow(ValidationException::class, 'not a valid SWIFT');
+    expect(RemittanceFormService::isIban('GB29NWBK60161331926819'))->toBeTrue()
+        ->and(RemittanceFormService::PURPOSE_CODES['S1004'])->toBe('Legal Services');
+});
+
+it('tracks a form from the bank to the remittance, marks the bills paid and files 15CA/CB', function () {
+    $service = app(RemittanceFormService::class);
+    $form = $service->prepare($this->bill, $service->defaults($this->bill), $this->accountant)['form'];
+
+    $service->markSubmitted($form, today()->toDateString(), $this->accountant);
+    expect($form->fresh())->status->toBe('Submitted')->submitted_on->isToday()->toBeTrue();
+
+    $paid = $service->markRemitted($form, ['remitted_on' => today()->toDateString(), 'bank_reference' => 'DB-SWIFT-778', 'exchange_rate' => '83.10', 'inr_debited' => '68183.55', 'bank_charges_inr' => '1180'], $this->accountant);
+    expect($paid)->toBe(1)
+        ->and($form->fresh())->status->toBe('Remitted')->inr_debited->toBe('68183.55')->bank_charges_inr->toBe('1180.00')
+        ->and($this->bill->fresh())->status->toBe('Paid')->paid_ref->toBe('DB-SWIFT-778')->payment_bank_name->toBe('ICICI Bank');
+    expect(fn () => $service->markRemitted($form->fresh(), ['remitted_on' => today()->toDateString(), 'bank_reference' => 'X'], $this->accountant))->toThrow(HttpException::class);
+    expect(fn () => $service->update($form->fresh(), $service->formData($form->fresh()), $this->accountant))->toThrow(HttpException::class, 'Make a copy');
+
+    $this->bill->update(['requires_15ca_cb' => true]);
+    expect(DashboardService::for($this->accountant)->pendingRemittanceForms()->pluck('id'))->toContain($this->bill->id);
+    $service->save15caCb($form->fresh(), ['form_15ca_ack' => '123456789012345', 'form_15ca_date' => today()->toDateString(), 'form_15cb_no' => 'UDIN-26-1'], $this->accountant);
+    expect($this->bill->fresh()->form_status)->toBe('Filed')
+        ->and(DashboardService::for($this->accountant)->pendingRemittanceForms()->pluck('id'))->not->toContain($this->bill->id);
+});
+
+it('edits, copies and cancels forms, freeing the bills of a cancelled one', function () {
+    $service = app(RemittanceFormService::class);
+    $form = $service->prepare($this->bill, $service->defaults($this->bill), $this->accountant)['form'];
+
+    $edited = $service->update($form, ['amount' => '800', 'beneficiary_name' => 'Harness Dickey & Pierce PLC'] + $service->formData($form), $this->accountant);
+    expect($edited['form'])->amount->toBe('800.00')->beneficiary->toBe('Harness Dickey & Pierce PLC')->id->toBe($form->id)
+        ->and(RemittanceForm::count())->toBe(1);
+
+    $service->cancel($form->fresh(), 'Wrong amount', $this->accountant);
+    expect($form->fresh())->status->toBe('Cancelled')->cancelled_reason->toBe('Wrong amount')
+        ->and($this->bill->fresh()->a2_prepared_on)->toBeNull()
+        ->and(RemittanceFormService::billOptions('USD'))->toHaveKey($this->bill->id);
+    expect(fn () => $service->cancel($form->fresh(), 'again', $this->accountant))->toThrow(HttpException::class);
+});
+
+it('has a remittance register with actions and an Excel export', function () {
+    $service = app(RemittanceFormService::class);
+    $form = $service->prepare($this->bill, ['exchange_rate' => '83'] + $service->defaults($this->bill), $this->accountant)['form'];
+
+    $this->get(RemittanceRegister::getUrl())->assertOk()->assertSee('Remittance register')->assertSee('Harness, Dickey &amp; Pierce', false);
+    Livewire::test(RemittanceRegister::class)
+        ->assertCanSeeTableRecords([$form])
+        ->callTableAction('submitted', $form, ['date' => today()->toDateString()])
+        ->callTableAction('form_15ca', $form, ['form_15ca_ack' => 'ACK-1'])
+        ->callTableAction('remitted', $form, ['remitted_on' => today()->toDateString(), 'bank_reference' => 'REF-9', 'inr_debited' => '68101.50'])
+        ->assertHasNoTableActionErrors()
+        ->callTableAction('copy_form_a2', $form)
+        ->assertHasNoTableActionErrors();
+
+    expect($form->fresh())->status->toBe('Remitted')->form_15ca_ack->toBe('ACK-1')
+        ->and(RemittanceForm::count())->toBe(2)->and(RemittanceForm::latest('id')->first()->expenses()->count())->toBe(0);
+
+    $rows = Livewire::test(RemittanceRegister::class)->instance()->exportRows();
+    expect($rows[0])->toContain('Bank reference', '15CA acknowledgement')
+        ->and(collect($rows)->firstWhere(fn ($r) => $r[1] === 'Remitted'))->toContain('REF-9', 'ACK-1', 820.5, 83.0, 68101.5, '699702');
+    Livewire::test(RemittanceRegister::class)->callAction('export')->assertFileDownloaded('Remittance-register-'.today()->toDateString().'.xlsx');
+
+    $this->actingAs($this->paralegal)->get(RemittanceRegister::getUrl())->assertForbidden();
 });
 
 it('offers Form A2 only on foreign-currency vendor bills and only to those who pay or edit them', function () {

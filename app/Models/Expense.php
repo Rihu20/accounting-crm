@@ -7,6 +7,7 @@ use App\Services\Money;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
@@ -90,6 +91,12 @@ class Expense extends Model
     private static function billKey(?string $number): string
     {
         return preg_replace('/[^a-z0-9]/', '', mb_strtolower((string) $number));
+    }
+
+    /** Bank Form A2s that pay this bill. */
+    public function remittanceForms(): BelongsToMany
+    {
+        return $this->belongsToMany(RemittanceForm::class, 'remittance_form_expense');
     }
 
     public function patentOffice(): BelongsTo

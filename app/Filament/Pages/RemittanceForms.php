@@ -52,7 +52,7 @@ class RemittanceForms extends Page implements HasTable
     /** @return Collection<int, RemittanceForm> */
     public function preparedForms(): Collection
     {
-        return RemittanceForm::with(['expense', 'preparer', 'debitBank', 'chargesBank'])->latest('id')->limit(50)->get();
+        return RemittanceForm::with(['expense', 'preparer', 'debitBank', 'chargesBank'])->latest('id')->limit(10)->get();
     }
 
     protected function getHeaderActions(): array

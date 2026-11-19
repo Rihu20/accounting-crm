@@ -49,6 +49,16 @@ class AccountingFilesController extends Controller
         return response()->streamDownload(fn () => print ($service->render($form)), $form->file_name, ['Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'X-Content-Type-Options' => 'nosniff']);
     }
 
+    /** The bank's advice / MT103 kept with a remittance. */
+    public function remittanceAdvice(RemittanceForm $form)
+    {
+        abort_unless(RemittanceForms::canAccess(), 403);
+        abort_unless($form->advice_path && preg_match('#^Remittances/[A-Za-z0-9/_-]+\.(pdf|png|jpe?g)$#i', $form->advice_path), 404);
+        abort_unless(Storage::disk(config('crm.disk'))->exists($form->advice_path), 404, 'The advice file is missing.');
+
+        return Storage::disk(config('crm.disk'))->response($form->advice_path, basename($form->advice_path), ['X-Content-Type-Options' => 'nosniff']);
+    }
+
     public function expense(Expense $expense)
     {
         $u = auth()->user();

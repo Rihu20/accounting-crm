@@ -23,6 +23,7 @@ Route::middleware(['auth', 'active', 'module:accounting', 'throttle:staff-write'
     Route::get('invoice-documents/{document}/pdf', [AccountingFilesController::class, 'invoice'])->name('crm.invoice-document');
     Route::get('expenses/{expense}/file', [AccountingFilesController::class, 'expense'])->name('crm.expense-file');
     Route::get('remittance-forms/{form}/download', [AccountingFilesController::class, 'remittanceForm'])->name('crm.remittance-form');
+    Route::get('remittance-forms/{form}/advice', [AccountingFilesController::class, 'remittanceAdvice'])->name('crm.remittance-advice');
     Route::get('master-template', [CrmController::class, 'masterTemplate']);
     Route::post('import/preview', [CrmController::class, 'importPreview']);
     Route::post('import/commit', [CrmController::class, 'importCommit']);

@@ -8,10 +8,12 @@ use App\Models\RemittanceForm;
 use App\Models\Setting;
 use App\Models\User;
 use App\Models\Vendor;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 use PhpOffice\PhpWord\Settings as WordSettings;
 use PhpOffice\PhpWord\TemplateProcessor;
 
@@ -63,7 +65,7 @@ class RemittanceFormService
     /** A form made straight from the Bank Form A2 page, without a bill. @return array<string, mixed> */
     public function newFormDefaults(string $currency = 'USD'): array
     {
-        return ['currency' => $currency, 'party' => null, 'beneficiary_name' => null, 'amount' => null, 'info' => null] + $this->formDefaults(null, $currency);
+        return ['currency' => $currency, 'party' => null, 'expense_ids' => [], 'beneficiary_name' => null, 'amount' => null, 'exchange_rate' => null, 'info' => null] + $this->formDefaults(null, $currency);
     }
 
     /**
@@ -160,11 +162,24 @@ class RemittanceFormService
             ?? RemittanceBank::where('is_active', true)->where('currency', $currency)->orderBy('bank_name')->value('id');
     }
 
+    /** Countries where the bank needs an IBAN (the note on the bank's form: UAE, European countries and the United Kingdom). */
+    public const IBAN_COUNTRIES = ['united arab emirates', 'uae', 'u.a.e.', 'united kingdom', 'uk', 'u.k.', 'great britain', 'england', 'scotland', 'wales', 'northern ireland', 'austria', 'belgium', 'bulgaria', 'croatia', 'cyprus', 'czech republic', 'czechia', 'denmark', 'estonia', 'finland', 'france', 'germany', 'greece', 'hungary', 'ireland', 'italy', 'latvia', 'lithuania', 'luxembourg', 'malta', 'netherlands', 'the netherlands', 'poland', 'portugal', 'romania', 'slovakia', 'slovenia', 'spain', 'sweden', 'norway', 'iceland', 'liechtenstein', 'switzerland', 'monaco', 'san marino'];
+
+    /** RBI purpose codes for services (group 10, other business services) offered on the form. */
+    public const PURPOSE_CODES = [
+        'S1004' => 'Legal Services',
+        'S1005' => 'Accounting, auditing, book keeping and tax consulting services',
+        'S1006' => 'Business and management consultancy and public relations services',
+        'S1007' => 'Advertising, trade fair, market research and public opinion polling services',
+        'S1008' => 'Research and Development services',
+        'S1009' => 'Architectural, engineering and other technical services',
+    ];
+
     /**
-     * Builds the Word file, records that the form was prepared and, when asked, keeps the beneficiary details on the vendor.
+     * Builds the Word file, records the form against its bills and keeps the beneficiary details on the vendor.
      *
-     * @param  array<string, mixed>  $data
-     * @return array{name: string, content: string, missing: array<int, string>}
+     * @param  array<string, mixed>  $data  may hold expense_ids: further bills paid by the same remittance
+     * @return array{name: string, content: string, missing: array<int, string>, form: RemittanceForm}
      */
     public function prepare(?Expense $expense, array $data, User $actor): array
     {
@@ -172,37 +187,256 @@ class RemittanceFormService
         if ($expense) {
             $data['currency'] = $expense->currency;
         }
+        $data = $this->validateForm($data);
+        $bills = $this->bills($expense, $data, $actor);
+        $name = $this->fileName($data);
+
+        $form = DB::transaction(function () use ($expense, $data, $actor, $name, $bills): RemittanceForm {
+            $form = RemittanceForm::create([
+                'expense_id' => $bills->first()?->id, 'prepared_by' => $actor->id, 'status' => 'Prepared', 'file_name' => $name,
+            ] + $this->formColumns($data));
+            $form->expenses()->sync($bills->pluck('id'));
+            $this->linkBills($form, $bills, $this->keepPartyDetails($expense ?? $bills->first(), $data, $data['currency']));
+            activity()->causedBy($actor)->performedOn($expense ?? $form)->withProperties(['beneficiary' => $data['beneficiary_name'], 'amount' => $data['amount'].' '.$data['currency'], 'bills' => $bills->count()])->log('Bank Form A2 prepared');
+
+            return $form;
+        });
+
+        return ['name' => $name, 'content' => $this->render($form), 'missing' => $this->missing($data), 'form' => $form];
+    }
+
+    /**
+     * Corrects a form that is not yet remitted or cancelled; the bills can be changed too.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array{name: string, content: string, missing: array<int, string>, form: RemittanceForm}
+     */
+    public function update(RemittanceForm $form, array $data, User $actor): array
+    {
+        abort_unless(self::canPrepareAny($actor), 403);
+        abort_unless($form->isOpen(), 422, 'Only a form that is not yet remitted or cancelled can be edited. Make a copy instead.');
+        $data = $this->validateForm($data);
+        $bills = $this->bills(null, $data, $actor);
+        $name = $this->fileName($data);
+
+        DB::transaction(function () use ($form, $data, $actor, $name, $bills): void {
+            $old = $form->expenses()->pluck('expenses.id');
+            $form->update(['expense_id' => $bills->first()?->id, 'file_name' => $name] + $this->formColumns($data));
+            $form->expenses()->sync($bills->pluck('id'));
+            $this->releaseBills($old->diff($bills->pluck('id')));
+            $this->linkBills($form, $bills, $this->keepPartyDetails($bills->first(), $data, $data['currency']));
+            activity()->causedBy($actor)->performedOn($form)->withProperties(['beneficiary' => $data['beneficiary_name'], 'amount' => $data['amount'].' '.$data['currency']])->log('Bank Form A2 edited');
+        });
+        $form->refresh();
+
+        return ['name' => $name, 'content' => $this->render($form), 'missing' => $this->missing($data), 'form' => $form];
+    }
+
+    /** The form as it can be opened again for editing or copying. @return array<string, mixed> */
+    public function formData(RemittanceForm $form): array
+    {
+        return ['expense_ids' => $form->expenses()->pluck('expenses.id')->map(fn ($id) => (string) $id)->all(), 'party' => null] + $form->data;
+    }
+
+    public function markSubmitted(RemittanceForm $form, string $date, User $actor): void
+    {
+        abort_unless(self::canPrepareAny($actor), 403);
+        abort_unless($form->status === 'Prepared', 422, 'Only a prepared form can be marked as handed to the bank.');
+        Validator::make(['date' => $date], ['date' => 'required|date|before_or_equal:today'])->validate();
+        $form->update(['status' => 'Submitted', 'submitted_on' => $date]);
+        activity()->causedBy($actor)->performedOn($form)->log('Form A2 handed to the bank');
+    }
+
+    /**
+     * The bank has sent the money: keep its reference, rate and charges, and mark the bills paid.
+     *
+     * @param  array<string, mixed>  $data
+     * @return int bills marked paid
+     */
+    public function markRemitted(RemittanceForm $form, array $data, User $actor): int
+    {
+        abort_unless($actor->allowed('accounting.expenses.pay'), 403);
+        abort_unless($form->isOpen(), 422, 'This form is already remitted or cancelled.');
         $data = Validator::make($data, [
+            'remitted_on' => 'required|date|before_or_equal:today',
+            'bank_reference' => 'required|string|max:255',
+            'exchange_rate' => 'nullable|numeric|gt:0',
+            'inr_debited' => 'nullable|numeric|min:0',
+            'bank_charges_inr' => 'nullable|numeric|min:0',
+            'advice_path' => 'nullable|string|max:500',
+        ])->validate();
+
+        return DB::transaction(function () use ($form, $data, $actor): int {
+            $form->update(['status' => 'Remitted', 'submitted_on' => $form->submitted_on ?? $data['remitted_on']] + $data);
+            $paid = 0;
+            foreach ($form->expenses()->where('status', 'Unpaid')->where('expense_type', 'vendor')->get() as $bill) {
+                app(ExpenseService::class)->paid($bill, ['paid_on' => $data['remitted_on'], 'paid_ref' => $data['bank_reference'], 'payment_bank_name' => $form->debitBank?->bank_name], $actor);
+                $paid++;
+            }
+            activity()->causedBy($actor)->performedOn($form)->withProperties(['reference' => $data['bank_reference'], 'bills_paid' => $paid])->log('Remittance sent by the bank');
+
+            return $paid;
+        });
+    }
+
+    /** @param  array<string, mixed>  $data */
+    public function save15caCb(RemittanceForm $form, array $data, User $actor): void
+    {
+        abort_unless(self::canPrepareAny($actor), 403);
+        $data = Validator::make($data, [
+            'form_15ca_ack' => 'nullable|string|max:255',
+            'form_15ca_date' => 'nullable|date|before_or_equal:today',
+            'form_15cb_no' => 'nullable|string|max:255',
+            'form_15cb_date' => 'nullable|date|before_or_equal:today',
+        ])->validate();
+        DB::transaction(function () use ($form, $data, $actor): void {
+            $form->update($data);
+            if (filled($data['form_15ca_ack'] ?? null)) {
+                $form->expenses()->get()->each(fn (Expense $bill) => $bill->update(['requires_15ca_cb' => true, 'form_status' => 'Filed']));
+            }
+            activity()->causedBy($actor)->performedOn($form)->withProperties(array_filter($data))->log('Form 15CA/CB details saved');
+        });
+    }
+
+    public function cancel(RemittanceForm $form, string $reason, User $actor): void
+    {
+        abort_unless(self::canPrepareAny($actor), 403);
+        abort_unless($form->isOpen(), 422, 'A remitted or cancelled form cannot be cancelled.');
+        abort_if(trim($reason) === '', 422, 'Give a reason.');
+        DB::transaction(function () use ($form, $reason, $actor): void {
+            $form->update(['status' => 'Cancelled', 'cancelled_reason' => trim($reason)]);
+            $this->releaseBills($form->expenses()->pluck('expenses.id'));
+            activity()->causedBy($actor)->performedOn($form)->withProperties(['reason' => trim($reason)])->log('Form A2 cancelled');
+        });
+    }
+
+    /**
+     * Foreign bills that a new form may pay: not paid yet, in the currency, and not already on an open form (except this one).
+     *
+     * @return array<int, string>
+     */
+    public static function billOptions(?string $currency, ?int $exceptForm = null, array $keep = []): array
+    {
+        return Expense::with('vendor')->where('expense_type', 'vendor')->where('currency', '!=', 'INR')
+            ->when($currency, fn ($q) => $q->where('currency', $currency))
+            ->where(fn ($q) => $q->where('status', 'Unpaid')->orWhereIn('id', array_filter($keep)))
+            ->whereDoesntHave('remittanceForms', fn ($q) => $q->whereIn('status', ['Prepared', 'Submitted'])->when($exceptForm, fn ($q) => $q->whereKeyNot($exceptForm)))
+            ->orderBy('payee_name')->orderBy('invoice_date')->get()
+            ->mapWithKeys(fn (Expense $e) => [$e->id => ($e->payee_name ?: $e->vendor?->name).' · '.($e->vendor_invoice_no ?: 'no invoice no').' · '.$e->invoice_date?->format('d.m.Y').' · '.Money::format((string) $e->amount, $e->currency)])->all();
+    }
+
+    /**
+     * Amount and additional information worked out from the chosen bills.
+     *
+     * @param  array<int, int|string>  $ids
+     * @return array{amount: string, info: string, beneficiary: ?string}
+     */
+    public static function billsSummary(array $ids): array
+    {
+        $bills = Expense::with('vendor')->whereKey($ids)->orderBy('invoice_date')->get();
+        $total = $bills->reduce(fn (string $sum, Expense $e) => bcadd($sum, (string) $e->amount, 2), '0.00');
+        $info = $bills->map(fn (Expense $e) => 'Invoice '.($e->vendor_invoice_no ?: '-').($e->invoice_date ? ' dated '.$e->invoice_date->format('d.m.Y') : '').($e->our_ref ? ' (our ref '.$e->our_ref.')' : ''))->implode('; ');
+
+        return ['amount' => $total, 'info' => $info, 'beneficiary' => $bills->first()?->vendor?->name ?: $bills->first()?->payee_name];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function validateForm(array $data): array
+    {
+        $text = fn (array $keys, int $max) => collect($keys)->mapWithKeys(fn ($k) => [$k => 'nullable|string|max:'.$max])->all();
+        $validator = Validator::make($data, [
             'currency' => ['required', 'in:'.implode(',', array_keys(self::currencies()))],
             'date' => 'required|date',
             'amount' => ['required', 'numeric', 'regex:/^\d+(\.\d{1,2})?$/', 'min:0.01'],
+            'exchange_rate' => 'nullable|numeric|gt:0',
             'debit_bank_id' => 'nullable|integer|exists:remittance_banks,id',
             'charges_bank_id' => 'nullable|integer|exists:remittance_banks,id',
             'beneficiary_name' => 'required|string|max:255',
             'charges' => 'required|in:BEN,OUR,SHA',
-        ] + collect(['country', 'bank_account', 'bank_name', 'swift', 'corr_bank_name', 'corr_bank_swift', 'purpose_code', 'purpose_desc', 'source_funds'])->mapWithKeys(fn ($k) => [$k => 'nullable|string|max:255'])->all()
-          + collect(['address', 'bank_address', 'corr_bank_address', 'purpose', 'info'])->mapWithKeys(fn ($k) => [$k => 'nullable|string|max:2000'])->all())->validate();
-
-        $debit = isset($data['debit_bank_id']) ? RemittanceBank::find($data['debit_bank_id']) : null;
-        $charges = isset($data['charges_bank_id']) ? RemittanceBank::find($data['charges_bank_id']) : null;
-        $currency = $data['currency'];
-        $content = $this->document($currency, $data, $debit, $charges);
-        $slug = trim(preg_replace('/[^A-Za-z0-9]+/', '-', $data['beneficiary_name']), '-');
-        $name = 'A2-'.substr($slug, 0, 40).'-'.$data['date'].'.docx';
-
-        DB::transaction(function () use ($expense, $data, $actor, $name, $currency): void {
-            $form = RemittanceForm::create([
-                'expense_id' => $expense?->id, 'prepared_by' => $actor->id, 'beneficiary' => $data['beneficiary_name'], 'currency' => $currency, 'amount' => $data['amount'],
-                'debit_bank_id' => $data['debit_bank_id'] ?? null, 'charges_bank_id' => $data['charges_bank_id'] ?? null, 'file_name' => $name, 'data' => $data,
-            ]);
-            $vendor = $this->keepPartyDetails($expense, $data, $currency);
-            $expense?->forceFill(['a2_prepared_on' => today()->toDateString(), 'a2_debit_bank_id' => $data['debit_bank_id'] ?? null, 'a2_charges_bank_id' => $data['charges_bank_id'] ?? null, 'vendor_id' => $expense->vendor_id ?? $vendor->id])->saveQuietly();
-            activity()->causedBy($actor)->performedOn($expense ?? $form)->withProperties(['beneficiary' => $data['beneficiary_name'], 'amount' => $data['amount'].' '.$currency])->log('Bank Form A2 prepared');
+            'expense_ids' => 'nullable|array',
+            'expense_ids.*' => 'integer|exists:expenses,id',
+        ] + $text(['country', 'bank_account', 'bank_name', 'swift', 'corr_bank_name', 'corr_bank_swift', 'purpose_code', 'purpose_desc', 'source_funds'], 255)
+          + $text(['address', 'bank_address', 'corr_bank_address', 'purpose', 'info'], 2000));
+        $validator->after(function ($v) use ($data): void {
+            $country = mb_strtolower(trim((string) ($data['country'] ?? '')));
+            if (in_array($country, self::IBAN_COUNTRIES, true) && ! self::isIban((string) ($data['bank_account'] ?? ''))) {
+                $v->errors()->add('bank_account', 'A valid IBAN is mandatory for '.trim((string) $data['country']).' (it starts with the country letters, for example GB29 NWBK 6016 1331 9268 19).');
+            }
+            foreach (['swift' => 'SWIFT', 'corr_bank_swift' => 'Correspondent bank SWIFT'] as $field => $label) {
+                $code = strtoupper(str_replace(' ', '', (string) ($data[$field] ?? '')));
+                if (preg_match('/[A-Z]/', $code) && ! preg_match('/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/', $code)) {
+                    $v->errors()->add($field, $label.' '.$code.' is not a valid SWIFT/BIC code (8 or 11 characters, such as MNBDUS33). An ABA, sort code or BLZ is digits only.');
+                }
+            }
         });
 
-        $missing = collect(['debit_bank_id' => 'bank account for the remittance', 'charges_bank_id' => 'bank account for charges', 'bank_account' => 'beneficiary account / IBAN', 'bank_name' => 'beneficiary bank', 'swift' => 'SWIFT code'])->filter(fn ($label, $key) => blank($data[$key] ?? null))->values()->all();
+        return $validator->validate();
+    }
 
-        return ['name' => $name, 'content' => $content, 'missing' => $missing];
+    public static function isIban(string $value): bool
+    {
+        $iban = strtoupper(str_replace(' ', '', $value));
+        if (! preg_match('/^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/', $iban)) {
+            return false;
+        }
+        $digits = preg_replace_callback('/[A-Z]/', fn ($m) => (string) (ord($m[0]) - 55), substr($iban, 4).substr($iban, 0, 4));
+
+        return bcmod($digits, '97') === '1';
+    }
+
+    /**
+     * The bill this form was opened from plus any chosen in the form, all in the form's currency.
+     *
+     * @param  array<string, mixed>  $data
+     * @return \Illuminate\Database\Eloquent\Collection<int, Expense>
+     */
+    private function bills(?Expense $expense, array $data, User $actor)
+    {
+        $ids = collect($data['expense_ids'] ?? [])->push($expense?->id)->filter()->unique()->values();
+        $bills = Expense::with('vendor')->whereKey($ids)->get()->sortBy(fn (Expense $e) => $e->id === $expense?->id ? 0 : 1)->values();
+        foreach ($bills as $bill) {
+            if (! self::canPrepare($bill, $actor) || $bill->currency !== $data['currency']) {
+                throw ValidationException::withMessages(['expense_ids' => 'Bill '.($bill->vendor_invoice_no ?: '#'.$bill->id).' is not a '.$data['currency'].' vendor bill.']);
+            }
+        }
+
+        return $bills;
+    }
+
+    /** @param  array<string, mixed>  $data  @return array<string, mixed> */
+    private function formColumns(array $data): array
+    {
+        return ['beneficiary' => $data['beneficiary_name'], 'currency' => $data['currency'], 'amount' => $data['amount'], 'exchange_rate' => $data['exchange_rate'] ?? null,
+            'debit_bank_id' => $data['debit_bank_id'] ?? null, 'charges_bank_id' => $data['charges_bank_id'] ?? null, 'data' => Arr::except($data, ['expense_ids'])];
+    }
+
+    /** @param  array<string, mixed>  $data */
+    private function fileName(array $data): string
+    {
+        return 'A2-'.substr(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $data['beneficiary_name']), '-'), 0, 40).'-'.$data['date'].'.docx';
+    }
+
+    /** @param  array<string, mixed>  $data  @return array<int, string> */
+    private function missing(array $data): array
+    {
+        return collect(['debit_bank_id' => 'bank account for the remittance', 'charges_bank_id' => 'bank account for charges', 'bank_account' => 'beneficiary account / IBAN', 'bank_name' => 'beneficiary bank', 'swift' => 'SWIFT code'])->filter(fn ($label, $key) => blank($data[$key] ?? null))->values()->all();
+    }
+
+    private function linkBills(RemittanceForm $form, $bills, Vendor $vendor): void
+    {
+        foreach ($bills as $bill) {
+            $bill->forceFill(['a2_prepared_on' => today()->toDateString(), 'a2_debit_bank_id' => $form->debit_bank_id, 'a2_charges_bank_id' => $form->charges_bank_id, 'vendor_id' => $bill->vendor_id ?? $vendor->id])->saveQuietly();
+        }
+    }
+
+    /** Bills no longer on any open or remitted form lose their "Form A2 prepared" mark. */
+    private function releaseBills($ids): void
+    {
+        Expense::whereKey($ids)->whereDoesntHave('remittanceForms', fn ($q) => $q->whereIn('status', ['Prepared', 'Submitted', 'Remitted']))
+            ->get()->each(fn (Expense $bill) => $bill->forceFill(['a2_prepared_on' => null])->saveQuietly());
     }
 
     /**
@@ -232,6 +466,16 @@ class RemittanceFormService
         return (string) (Setting::get('company_pan') ?: substr((string) Setting::get('company_gstin', ''), 2, 10));
     }
 
+    /** 123456.5 → "1,23,456.50" (Indian grouping). */
+    public static function rupees(string $amount): string
+    {
+        $f = new \NumberFormatter('en_IN', \NumberFormatter::DECIMAL);
+        $f->setAttribute(\NumberFormatter::MIN_FRACTION_DIGITS, 2);
+        $f->setAttribute(\NumberFormatter::MAX_FRACTION_DIGITS, 2);
+
+        return $f->format((float) $amount);
+    }
+
     public static function words(string $amount, string $currency): string
     {
         $parts = explode('.', Money::round($amount));
@@ -259,6 +503,7 @@ class RemittanceFormService
             'currency' => $currency,
             'amount' => number_format((float) $data['amount'], $currency === 'JPY' ? 0 : 2),
             'amount_words' => self::words((string) $data['amount'], $currency),
+            'inr_equivalent' => filled($data['exchange_rate'] ?? null) ? self::rupees(Money::mul((string) $data['amount'], (string) $data['exchange_rate'])).' (at '.$data['exchange_rate'].')' : '_____________________________',
             'company' => (string) Setting::get('company_name', ''),
             'pan' => self::companyPan(),
             'address' => (string) Setting::get('company_address', ''),
