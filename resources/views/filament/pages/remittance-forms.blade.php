@@ -12,5 +12,18 @@
             <p class="crm-muted">{{ $this->bankHint() }}</p>
         @endforelse
     </section>
+    @php($forms = $this->preparedForms())
+    <section class="crm-card">
+        <h3>Forms prepared <span class="crm-muted">({{ $forms->count() }}{{ $forms->count() >= 50 ? ', latest 50' : '' }})</span></h3>
+        <p>Every Form A2 made here or from the Expense register. Open one to get the same Word file again.</p>
+        @forelse($forms as $form)
+            <div class="crm-row">
+                <span><strong>{{ $form->beneficiary }}</strong><small>{{ \Illuminate\Support\Carbon::parse($form->data['date'] ?? $form->created_at)->format('d.m.Y') }} · {{ \App\Services\Money::format((string) $form->amount, $form->currency) }}{{ $form->expense?->vendor_invoice_no ? ' · invoice '.$form->expense->vendor_invoice_no : '' }} · remittance {{ $form->debitBank?->bank_name ?? 'no bank' }}, charges {{ $form->chargesBank?->bank_name ?? 'no bank' }} · by {{ $form->preparer?->name ?? 'unknown' }}</small></span>
+                <a class="crm-link" href="{{ route('crm.remittance-form', $form) }}">Open (Word)</a>
+            </div>
+        @empty
+            <p class="crm-muted">No form prepared yet. Use “Prepare Form A2” on a bill below.</p>
+        @endforelse
+    </section>
     {{ $this->table }}
 </x-filament-panels::page>

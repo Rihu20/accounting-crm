@@ -5,6 +5,7 @@ namespace App\Filament\Pages;
 use App\Filament\Resources\ExpenseResource\BankFormA2;
 use App\Models\Expense;
 use App\Models\RemittanceBank;
+use App\Models\RemittanceForm;
 use App\Services\Money;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
@@ -46,6 +47,12 @@ class RemittanceForms extends Page implements HasTable
     public function banks(): Collection
     {
         return RemittanceBank::where('is_active', true)->orderBy('bank_name')->orderBy('currency')->get();
+    }
+
+    /** @return Collection<int, RemittanceForm> */
+    public function preparedForms(): Collection
+    {
+        return RemittanceForm::with(['expense', 'preparer', 'debitBank', 'chargesBank'])->latest('id')->limit(50)->get();
     }
 
     protected function getHeaderActions(): array

@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Filament\Pages\RemittanceForms;
+use App\Filament\Resources\InvoiceDocumentResource;
 use App\Models\Expense;
 use App\Models\InvoiceDocument;
+use App\Models\RemittanceForm;
 use App\Services\AccountingFileService;
 use App\Services\PortalWorkflow;
+use App\Services\RemittanceFormService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 
@@ -29,12 +33,20 @@ class AccountingFilesController extends Controller
 
     public function invoice(InvoiceDocument $document)
     {
-        abort_unless(\App\Filament\Resources\InvoiceDocumentResource::canViewAny(), 403);
+        abort_unless(InvoiceDocumentResource::canViewAny(), 403);
         abort_unless(preg_match('#^InvoiceUploads/[A-Za-z0-9/_-]+\.pdf$#i', $document->path), 404);
 
         abort_unless(Storage::disk(config('crm.disk'))->exists($document->path), 404, 'The PDF file is missing. Upload the original again.');
 
         return Storage::disk(config('crm.disk'))->response($document->path, $document->file_name, ['Content-Type' => 'application/pdf', 'X-Content-Type-Options' => 'nosniff']);
+    }
+
+    /** A prepared Form A2, rebuilt from the values kept when it was made. */
+    public function remittanceForm(RemittanceForm $form, RemittanceFormService $service)
+    {
+        abort_unless(RemittanceForms::canAccess(), 403);
+
+        return response()->streamDownload(fn () => print ($service->render($form)), $form->file_name, ['Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'X-Content-Type-Options' => 'nosniff']);
     }
 
     public function expense(Expense $expense)

@@ -7,6 +7,7 @@ use App\Filament\Pages\Workspace;
 use App\Filament\Resources\ExpenseResource\Pages\ManageRecords as ExpensePage;
 use App\Models\Expense;
 use App\Models\RemittanceBank;
+use App\Models\RemittanceForm;
 use App\Models\User;
 use App\Models\Vendor;
 use App\Services\DashboardService;
@@ -65,7 +66,8 @@ it('fills Form A2 from the bill, the vendor master and the settings', function (
 
     expect($form['name'])->toBe('A2-Harness-Dickey-Pierce-'.today()->toDateString().'.docx')
         ->and($form['missing'])->toBe([])
-        ->and($text)->toContain('FORM A2', 'Harness, Dickey & Pierce', '000123456789', 'MNBDUS33', 'USD 820.50', 'USD Eight Hundred Twenty and 50/100 Only', 'S1004', '☒ OUR', 'ABBCA7682H', 'ICICI Bank, Noida Sec 18', 'EEFC-111', 'CUR-999 (HDFC Bank, Delhi)')
+        ->and($text)->toContain('FORM A2', 'Harness, Dickey & Pierce', '000123456789', 'MNBDUS33', '820.50', 'USD Eight Hundred Twenty and 50/100 Only', 'S1004', 'OUR þ', 'ABBCA7682H', 'ICICI Bank, Noida Sec 18', 'EEFC-111', 'CUR-999', 'Plot No C-116', today()->format('d.m.Y'))
+        ->not->toContain('BEN þ', '${')
         ->and($this->bill->fresh()->a2_prepared_on->isToday())->toBeTrue()
         ->and(Activity::where('description', 'Bank Form A2 prepared')->where('subject_id', $this->bill->id)->exists())->toBeTrue();
 });
@@ -118,6 +120,24 @@ it('has its own Bank Form A2 page with saved banks and the foreign bills', funct
         ->and($this->bill->fresh()->a2_prepared_on)->not->toBeNull();
 
     $this->actingAs($this->paralegal)->get(RemittanceForms::getUrl())->assertForbidden();
+});
+
+it('keeps every prepared form and opens the same Word file again', function () {
+    $service = app(RemittanceFormService::class);
+    $first = $service->prepare($this->bill, ['date' => '2026-06-15'] + $service->defaults($this->bill), $this->accountant);
+    $service->prepare($this->bill, ['charges' => 'SHA'] + $service->defaults($this->bill), $this->accountant);
+
+    $forms = RemittanceForm::orderBy('id')->get();
+    expect($forms)->toHaveCount(2)
+        ->and($forms[0])->beneficiary->toBe('Harness, Dickey & Pierce')->currency->toBe('USD')->amount->toBe('820.50')->debit_bank_id->toBe($this->usdBank->id)->prepared_by->toBe($this->accountant->id)
+        ->and($forms[0]->data)->not->toHaveKey('save_vendor');
+
+    $this->get(RemittanceForms::getUrl())->assertOk()->assertSee('Forms prepared')->assertSee('15.06.2026')->assertSee(route('crm.remittance-form', $forms[0]));
+    $again = $this->get(route('crm.remittance-form', $forms[0]))->assertOk()->assertDownload($first['name']);
+    expect(docxText($again->streamedContent()))->toBe(docxText($first['content']))->toContain('2026-2027', '15.06.2026', 'OUR þ')
+        ->and(docxText($this->get(route('crm.remittance-form', $forms[1]))->streamedContent()))->toContain('SHA þ')->not->toContain('OUR þ');
+
+    $this->actingAs($this->paralegal)->get(route('crm.remittance-form', $forms[0]))->assertForbidden();
 });
 
 it('offers Form A2 only on foreign-currency vendor bills and only to those who pay or edit them', function () {

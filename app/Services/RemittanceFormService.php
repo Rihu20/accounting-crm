@@ -4,15 +4,15 @@ namespace App\Services;
 
 use App\Models\Expense;
 use App\Models\RemittanceBank;
+use App\Models\RemittanceForm;
 use App\Models\Setting;
 use App\Models\User;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
-use PhpOffice\PhpWord\Element\Section;
-use PhpOffice\PhpWord\IOFactory;
-use PhpOffice\PhpWord\PhpWord;
 use PhpOffice\PhpWord\Settings as WordSettings;
+use PhpOffice\PhpWord\TemplateProcessor;
 
 /** The bank's Form A2 (application for remittance abroad), filled from a foreign vendor bill. Nothing is sent to the bank. */
 class RemittanceFormService
@@ -113,9 +113,15 @@ class RemittanceFormService
 
         $debit = isset($data['debit_bank_id']) ? RemittanceBank::find($data['debit_bank_id']) : null;
         $charges = isset($data['charges_bank_id']) ? RemittanceBank::find($data['charges_bank_id']) : null;
-        $content = $this->document($expense, $data, $debit, $charges);
+        $content = $this->document($expense->currency, $data, $debit, $charges);
+        $slug = trim(preg_replace('/[^A-Za-z0-9]+/', '-', $data['beneficiary_name']), '-');
+        $name = 'A2-'.substr($slug, 0, 40).'-'.$data['date'].'.docx';
 
-        DB::transaction(function () use ($expense, $data, $actor): void {
+        DB::transaction(function () use ($expense, $data, $actor, $name): void {
+            RemittanceForm::create([
+                'expense_id' => $expense->id, 'prepared_by' => $actor->id, 'beneficiary' => $data['beneficiary_name'], 'currency' => $expense->currency, 'amount' => $data['amount'],
+                'debit_bank_id' => $data['debit_bank_id'] ?? null, 'charges_bank_id' => $data['charges_bank_id'] ?? null, 'file_name' => $name, 'data' => Arr::except($data, ['save_vendor']),
+            ]);
             if (($data['save_vendor'] ?? false) && $expense->vendor) {
                 $expense->vendor->update(['address' => $data['address'] ?? null, 'bank_account' => $data['bank_account'] ?? null, 'bank_name' => $data['bank_name'] ?? null, 'bank_address' => $data['bank_address'] ?? null, 'swift' => $data['swift'] ?? null, 'corr_bank_name' => $data['corr_bank_name'] ?? null, 'corr_bank_address' => $data['corr_bank_address'] ?? null, 'corr_bank_swift' => $data['corr_bank_swift'] ?? null]);
             }
@@ -124,9 +130,14 @@ class RemittanceFormService
         });
 
         $missing = collect(['debit_bank_id' => 'bank account for the remittance', 'charges_bank_id' => 'bank account for charges', 'bank_account' => 'beneficiary account / IBAN', 'bank_name' => 'beneficiary bank', 'swift' => 'SWIFT code'])->filter(fn ($label, $key) => blank($data[$key] ?? null))->values()->all();
-        $slug = trim(preg_replace('/[^A-Za-z0-9]+/', '-', $data['beneficiary_name']), '-');
 
-        return ['name' => 'A2-'.substr($slug, 0, 40).'-'.$data['date'].'.docx', 'content' => $content, 'missing' => $missing];
+        return ['name' => $name, 'content' => $content, 'missing' => $missing];
+    }
+
+    /** The same Word file again, from the values kept when the form was prepared. */
+    public function render(RemittanceForm $form): string
+    {
+        return $this->document($form->currency, $form->data, $form->debitBank, $form->chargesBank);
     }
 
     public static function companyPan(): string
@@ -147,106 +158,56 @@ class RemittanceFormService
         return (string) (Setting::get($key) ?: self::DEFAULTS[$key]);
     }
 
-    /** @param  array<string, mixed>  $data */
-    private function document(Expense $expense, array $data, ?RemittanceBank $debit, ?RemittanceBank $charges): string
+    /**
+     * Fills the bank's own Form A2 (docs/Form_A2_Template.docx), so the layout is exactly the bank's.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function document(string $currency, array $data, ?RemittanceBank $debit, ?RemittanceBank $charges): string
     {
-        $currency = $expense->currency;
-        $amount = number_format((float) $data['amount'], $currency === 'JPY' ? 0 : 2);
-        $company = (string) Setting::get('company_name', '');
-        $bankName = (string) ($debit ? $debit->bank_name.($debit->branch ? ', '.$debit->branch : '') : '');
-        $start = today()->month >= 4 ? today()->year : today()->year - 1;
-
-        $word = new PhpWord;
-        $word->setDefaultFontName('Arial');
-        $word->setDefaultFontSize(9);
-        $s = $word->addSection(['marginTop' => 900, 'marginBottom' => 900, 'marginLeft' => 850, 'marginRight' => 850]);
-        $blank = '______________________';
-        $value = fn (?string $v): array => [filled($v) ? $v : $blank, filled($v)];
-        $line = function (Section $s, array $parts, array $para = []): void {
-            $run = $s->addTextRun($para + ['spaceAfter' => 80]);
-            foreach ($parts as $p) {
-                [$text, $bold] = is_array($p) ? $p : [$p, false];
-                $run->addText((string) $text, ['bold' => $bold]);
-            }
-        };
-        $just = ['alignment' => 'both'];
-        $table = function (Section $s, array $rows, array $widths): void {
-            $t = $s->addTable(['borderSize' => 4, 'borderColor' => '000000', 'cellMargin' => 60, 'layout' => 'fixed']);
-            foreach ($rows as $row) {
-                $t->addRow();
-                foreach ($row as $i => $cell) {
-                    $c = $t->addCell($widths[$i]);
-                    // A cell is plain text, or a list of lines; a line is a list of parts; a part is text or [text, bold].
-                    foreach (is_string($cell) ? [[$cell]] : $cell as $lineParts) {
-                        $run = $c->addTextRun(['spaceAfter' => 0]);
-                        foreach ($lineParts as $p) {
-                            [$text, $bold] = is_array($p) ? $p : [$p, false];
-                            $run->addText((string) $text, ['bold' => $bold]);
-                        }
-                    }
-                }
-            }
-            $s->addTextBreak(1, null, ['spaceAfter' => 60]);
-        };
-        $sign = fn () => $line($s, ['Name: ', [$company, true], '          Signature: '.$blank], ['spaceBefore' => 120, 'spaceAfter' => 120]);
-        $box = fn (string $k): string => ($data['charges'] === $k ? '☒ ' : '☐ ').$k;
-
-        $s->addText('FORM A2', ['bold' => true, 'size' => 14], ['alignment' => 'center', 'spaceAfter' => 20]);
-        $s->addText('(To be completed by the applicant)', [], ['alignment' => 'center', 'spaceAfter' => 120]);
-        $table($s, [[
-            [['(For payments other than imports of goods and remittances covering intermediary trade)'], [''], [['Application for Remittance Abroad', true]]],
-            [['Form No. '.$blank], ['AD Code No. '.$blank], ['UCIC No. '.$blank], ['(To be filled in by the Authorised Dealer)'], [''], ['Currency ', [$currency, true], '   Amount ', [$amount, true]], ['Equivalent to Rupees '.$blank], ['Amount in words ', [self::words((string) $data['amount'], $currency), true]]],
-        ]], [4400, 5800]);
-        $line($s, ['I/We  ', $value($company)]);
-        $line($s, ['PAN No.  ', $value(self::companyPan())]);
-        $line($s, ['Address  ', $value((string) Setting::get('company_address', ''))]);
-        $line($s, ['Authorise  ', $value($bankName), ' (Name of AD branch)']);
-        $line($s, ['To debit my RFC/EEFC A/c. No.  ', $value($debit?->account_no), '  for (FCY & amount)  ', [$currency.' '.$amount, true]]);
-        $line($s, ['Savings Bank/Current A/c. No '.$blank.' for (FCY & amount) '.$blank]);
-        $line($s, ['A/c. No.  ', $value($charges ? $charges->account_no.' ('.$charges->bank_name.($charges->branch ? ', '.$charges->branch : '').')' : null), '  for charges and effect the foreign exchange remittance directly.'], ['spaceAfter' => 120]);
-        $table($s, collect([
-            'Beneficiary Name' => $value($data['beneficiary_name']),
-            'Beneficiary Address' => $value($data['address'] ?? null),
-            'Beneficiary Account No. / IBAN No.' => $value($data['bank_account'] ?? null),
-            'Beneficiary Bank Name' => $value($data['bank_name'] ?? null),
-            'Beneficiary Bank Address' => $value($data['bank_address'] ?? null),
-            'Swift code / ABA / Sort code / Routing No / BLZ No' => $value($data['swift'] ?? null),
-            'Purpose of Remittance' => $value($data['purpose'] ?? null),
-            'Correspondent Bank Charges' => [$box('BEN').'      '.$box('OUR').'      '.$box('SHA'), false],
-            'Correspondent Bank Name' => [(string) ($data['corr_bank_name'] ?? ''), true],
-            'Correspondent Bank Address' => [(string) ($data['corr_bank_address'] ?? ''), true],
-            'Correspondent Bank Swift Code' => [(string) ($data['corr_bank_swift'] ?? ''), true],
-            'Additional Information' => [(string) ($data['info'] ?? ''), true],
-        ])->map(fn ($v, $label) => [$label, [[$v]]])->values()->all(), [3600, 6600]);
-        $table($s, [['Sr.No.', 'Whether under LRS (Y/N)', 'Purpose Code', 'Purpose Code Description'], ['1', 'No', [[[(string) ($data['purpose_code'] ?? ''), true]]], [[[(string) ($data['purpose_desc'] ?? ''), true]]]]], [1000, 2400, 2000, 4800]);
-        $s->addText('Charges claimed by foreign banks – In certain instances, the foreign bank(s) may claim their charges from '.($bankName ?: 'the bank').' subsequently, as per applicable rules and regulations of the respective country. By accepting these terms and conditions, the user hereby irrevocably authorises '.($bankName ?: 'the bank').' to debit the amount of such charges to his/her account as and when such claim is received.', [], $just);
-        $s->addText('Note – 1. Additional purpose code is required for remittance to UAE and for THB currency transactions. 2. IBAN number is mandatory for UAE, European countries and the United Kingdom.', [], $just);
-        $sign();
-        $s->addText('Payment for import of services (Purpose Group Nos. 02, 03, 05, 06, 07, 08, 09, 10, 11, 15, 16 or 17), please indicate:');
-        $line($s, ['Name of the country providing ultimate services:  ', $value($data['country'] ?? null)], ['spaceAfter' => 120]);
-        $s->addText('Declaration (Under FEMA 1999)', ['bold' => true], ['alignment' => 'center']);
-        $s->addText('I, '.$company.' hereby declare that the total amount of foreign exchange purchased from or remitted through all sources in India during the financial year, including this application, is as per the extant FEMA Regulations and certify that the source of funds for making the said remittance belongs to me and the foreign exchange will not be used for prohibited purposes / foreign exchange purchased from you is for the purpose indicated above.', [], $just);
-        $s->addText('I/We hereby declare that the transaction, details of which are specifically mentioned above, does not involve and is not designed for the purpose of any contravention or evasion of the provisions of the aforesaid Act or of any rule, regulation, notification, direction or order made thereunder. I/We also agree and undertake to give such information / documents as will reasonably satisfy you about this transaction in terms of the above declaration. I/We understand that if I/We refuse to comply with any such requirement or make only unsatisfactory compliance therewith, the Bank shall refuse in writing to undertake the transaction and shall, if it has reason to believe that any contravention / evasion is contemplated by me/us, report the matter to the Reserve Bank of India.', [], $just);
-        $s->addText('I / We declare and understand that the foreign exchange to be acquired / payment to be made by me / us pursuant to this application shall be used / made by me / us only for the purpose for which it is acquired / to be made and that the conditions subject to which the exchange / permission is granted will be complied with.', [], $just);
-        $line($s, ['Source of Funds for this remittance  ', $value($data['source_funds'] ?? null)]);
-        $s->addText('I / We hereby declare that the statements made by me / us on this form are true and that I / we have not applied for an authorisation through any other bank (applicable only for LRS capital account transactions).', [], $just);
-        $sign();
-        $s->addText('Details of the remittances made / transactions effected under the Liberalised Remittance Scheme in the current Financial Year (April–March) '.$start.'-'.($start + 1));
-        $table($s, array_merge([['Sr.No.', 'Date', 'FCY and Amount', 'Name and address of AD branch / FFMC through which the transaction has been effected']], array_fill(0, 3, ['', '', '', ''])), [1000, 1800, 2400, 5000]);
-        $s->addText('I confirm that the received / realised / unspent / unused foreign exchange, unless reinvested, shall be repatriated and surrendered to an authorised person within a period of 180 days from the date of such receipt / realisation / purchase / acquisition or date of return to India, as the case may be, in accordance with Regulation 7 of the Foreign Exchange Management (Realisation, repatriation and surrender of foreign exchange) Regulations, 2015.', [], $just);
-        $sign();
-        $line($s, ['Date: ', [Carbon::parse($data['date'])->format('d.m.Y'), true]], ['spaceAfter' => 200]);
-        $s->addText('Certificate by the Authorised Dealer', ['bold' => true], ['alignment' => 'center']);
-        $s->addText('This is to certify that the remittance is not being made by / to ineligible entities and that the remittance is in conformity with the instructions issued by the Reserve Bank from time to time under the Scheme.', [], $just);
-        foreach (['Name and Employee ID of the authorised official:', 'Signature:', 'Date:', 'Stamp and seal:'] as $label) {
-            $s->addText($label);
+        $date = Carbon::parse($data['date']);
+        $start = $date->month >= 4 ? $date->year : $date->year - 1;
+        $text = fn (string $key): string => trim((string) ($data[$key] ?? ''));
+        $values = [
+            'currency' => $currency,
+            'amount' => number_format((float) $data['amount'], $currency === 'JPY' ? 0 : 2),
+            'amount_words' => self::words((string) $data['amount'], $currency),
+            'company' => (string) Setting::get('company_name', ''),
+            'pan' => self::companyPan(),
+            'address' => (string) Setting::get('company_address', ''),
+            'ad_bank' => $debit ? $debit->bank_name.($debit->branch ? ', '.$debit->branch : '') : '',
+            'debit_account' => (string) ($debit?->account_no ?? ''),
+            'charges_account' => (string) ($charges?->account_no ?? ''),
+            'b_name' => $text('beneficiary_name'),
+            'b_address' => $text('address'),
+            'b_account' => $text('bank_account'),
+            'b_bank' => $text('bank_name'),
+            'b_bank_address' => $text('bank_address'),
+            'b_swift' => $text('swift'),
+            'purpose' => $text('purpose'),
+            'c_name' => $text('corr_bank_name'),
+            'c_address' => $text('corr_bank_address'),
+            'c_swift' => $text('corr_bank_swift'),
+            'info' => $text('info'),
+            'purpose_code' => $text('purpose_code'),
+            'purpose_desc' => $text('purpose_desc'),
+            'country' => $text('country'),
+            'source_funds' => $text('source_funds'),
+            'fy' => $start.'-'.($start + 1),
+            'date' => $date->format('d.m.Y'),
+        ];
+        // The tick is a Wingdings character: "þ" draws the ticked box.
+        foreach (['BEN', 'OUR', 'SHA'] as $option) {
+            $values['tick_'.strtolower($option)] = $data['charges'] === $option ? 'þ' : '';
         }
 
         $escaping = WordSettings::isOutputEscapingEnabled();
         WordSettings::setOutputEscapingEnabled(true);
         $path = tempnam(sys_get_temp_dir(), 'a2');
         try {
-            IOFactory::createWriter($word, 'Word2007')->save($path);
+            $template = new TemplateProcessor(base_path('docs/Form_A2_Template.docx'));
+            $template->setValues($values);
+            $template->saveAs($path);
 
             return (string) file_get_contents($path);
         } finally {
