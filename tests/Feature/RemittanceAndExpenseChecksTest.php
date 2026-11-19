@@ -158,6 +158,34 @@ it('keeps every prepared form and opens the same Word file again', function () {
     $this->actingAs($this->paralegal)->get(route('crm.remittance-form', $forms[0]))->assertForbidden();
 });
 
+it('makes a Form A2 straight from the page without a vendor bill', function () {
+    $service = app(RemittanceFormService::class);
+    expect(RemittanceFormService::partyOptions())->toHaveKey('Harness, Dickey & Pierce')
+        ->and($service->partyDetails('harness, dickey & pierce'))->toMatchArray(['beneficiary_name' => 'Harness, Dickey & Pierce', 'bank_account' => '000123456789', 'swift' => 'MNBDUS33']);
+
+    Livewire::test(RemittanceForms::class)
+        ->mountAction('new_form_a2')
+        ->assertActionDataSet(['currency' => 'USD', 'debit_bank_id' => $this->usdBank->id, 'charges_bank_id' => $this->inrBank->id, 'purpose_code' => 'S1004'])
+        ->setActionData(['party' => 'Harness, Dickey & Pierce'])
+        ->assertActionDataSet(['beneficiary_name' => 'Harness, Dickey & Pierce', 'bank_account' => '000123456789', 'swift' => 'MNBDUS33'])
+        ->setActionData(['currency' => 'EUR', 'amount' => '1500', 'info' => 'Advance for filing'])
+        ->callMountedAction()
+        ->assertHasNoActionErrors()
+        ->assertFileDownloaded('A2-Harness-Dickey-Pierce-'.today()->toDateString().'.docx');
+
+    $form = RemittanceForm::sole();
+    expect($form)->expense_id->toBeNull()->currency->toBe('EUR')->amount->toBe('1500.00')
+        ->and($form->data['info'])->toBe('Advance for filing')
+        ->and(docxText(app(RemittanceFormService::class)->render($form)))->toContain('EUR One Thousand Five Hundred Only', '000123456789', 'Advance for filing')
+        ->and($this->bill->fresh()->a2_prepared_on)->toBeNull();
+
+    $new = $service->prepare(null, ['currency' => 'GBP', 'amount' => '200', 'beneficiary_name' => 'Marks & Clerk LLP', 'country' => 'United Kingdom', 'bank_account' => 'GB29NWBK60161331926819'] + $service->newFormDefaults(), $this->accountant);
+    expect($new['name'])->toBe('A2-Marks-Clerk-LLP-'.today()->toDateString().'.docx')
+        ->and(Vendor::where('name', 'Marks & Clerk LLP')->sole())->bank_account->toBe('GB29NWBK60161331926819')->default_currency->toBe('GBP')->country->toBe('United Kingdom');
+    expect(fn () => $service->prepare(null, ['currency' => 'INR', 'amount' => '5', 'beneficiary_name' => 'X'] + $service->newFormDefaults(), $this->accountant))->toThrow(ValidationException::class);
+    expect(fn () => $service->prepare(null, ['amount' => '5', 'beneficiary_name' => 'X'] + $service->newFormDefaults(), $this->paralegal))->toThrow(HttpException::class);
+});
+
 it('offers Form A2 only on foreign-currency vendor bills and only to those who pay or edit them', function () {
     $rupees = Expense::create(array_replace($this->base, ['expense_group' => 'indian', 'currency' => 'INR', 'vendor_invoice_no' => 'R-1', 'category' => 'Rent']));
     expect(RemittanceFormService::canPrepare($this->bill, $this->accountant))->toBeTrue()

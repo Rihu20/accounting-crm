@@ -57,7 +57,7 @@ class RemittanceForms extends Page implements HasTable
 
     protected function getHeaderActions(): array
     {
-        return [$this->addBankAction()];
+        return [BankFormA2::newAction(), $this->addBankAction()->color('gray')];
     }
 
     public function addBankAction(): Action

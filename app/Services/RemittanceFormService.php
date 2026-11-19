@@ -29,46 +29,83 @@ class RemittanceFormService
     /** Vendor bank details that the form can save back to the vendor master. */
     public const VENDOR_FIELDS = ['address', 'bank_account', 'bank_name', 'bank_address', 'swift', 'corr_bank_name', 'corr_bank_address', 'corr_bank_swift'];
 
+    /** Who may make a Form A2 at all (with or without a bill). */
+    public static function canPrepareAny(User $user): bool
+    {
+        return $user->allowed('accounting.expenses.pay') || $user->allowed('accounting.expenses.edit_all');
+    }
+
     public static function canPrepare(Expense $expense, User $user): bool
     {
-        return $expense->expense_type === 'vendor' && $expense->currency !== 'INR'
-            && ($user->allowed('accounting.expenses.pay') || $user->allowed('accounting.expenses.edit_all'));
+        return $expense->expense_type === 'vendor' && $expense->currency !== 'INR' && self::canPrepareAny($user);
+    }
+
+    /** Currencies a Form A2 can be made in (foreign only). @return array<string, string> */
+    public static function currencies(): array
+    {
+        return collect(config('crm.expense_currencies'))->reject(fn ($c) => $c === 'INR')->mapWithKeys(fn ($c) => [$c => $c])->all();
     }
 
     /** @return array<string, mixed> */
     public function defaults(Expense $expense): array
     {
         $expense->loadMissing('vendor');
-        $vendor = $expense->vendor ?? self::vendorNamed((string) $expense->payee_name);
-        $last = self::lastFormFor($vendor?->name ?: (string) $expense->payee_name)?->data ?? [];
-        // The vendor master first, then what was typed on this party's last form.
-        $party = fn (string $field, string $key) => $vendor?->{$field} ?: ($last[$key] ?? null);
         $info = collect([
             $expense->vendor_invoice_no ? 'Invoice '.$expense->vendor_invoice_no.($expense->invoice_date ? ' dated '.$expense->invoice_date->format('d.m.Y') : '') : null,
             $expense->our_ref ? 'Our ref '.$expense->our_ref : null,
         ])->filter()->implode('; ');
+        $party = $this->partyDetails($expense->vendor?->name ?: (string) $expense->payee_name, $expense->vendor);
 
+        return ['amount' => (string) $expense->amount, 'country' => $expense->party_country ?: $party['country'], 'info' => $info]
+            + $party + $this->formDefaults($expense, $expense->currency);
+    }
+
+    /** A form made straight from the Bank Form A2 page, without a bill. @return array<string, mixed> */
+    public function newFormDefaults(string $currency = 'USD'): array
+    {
+        return ['currency' => $currency, 'party' => null, 'beneficiary_name' => null, 'amount' => null, 'info' => null] + $this->formDefaults(null, $currency);
+    }
+
+    /**
+     * A party's saved details: the vendor master first, then what was typed on its last form.
+     *
+     * @return array<string, mixed>
+     */
+    public function partyDetails(string $name, ?Vendor $vendor = null): array
+    {
+        $vendor ??= self::vendorNamed($name);
+        $last = self::lastFormFor($vendor?->name ?: $name)?->data ?? [];
+        $pick = fn (string $field) => $vendor?->{$field} ?: ($last[$field] ?? null);
+
+        return ['beneficiary_name' => $vendor?->name ?: (($last['beneficiary_name'] ?? null) ?: ($name ?: null)), 'country' => $vendor?->country ?: ($last['country'] ?? null)]
+            + collect(self::VENDOR_FIELDS)->mapWithKeys(fn ($field) => [$field => $pick($field)])->all();
+    }
+
+    /**
+     * Saved parties to pick from: foreign vendors and everyone a form was made for.
+     *
+     * @return array<string, string>
+     */
+    public static function partyOptions(): array
+    {
+        return Vendor::where('vendor_type', 'Foreign')->pluck('name')
+            ->merge(RemittanceForm::distinct()->pluck('beneficiary'))
+            ->map(fn ($name) => trim((string) $name))->filter()->unique(fn ($name) => mb_strtolower($name))
+            ->sortBy(fn ($name) => mb_strtolower($name))->mapWithKeys(fn ($name) => [$name => $name])->all();
+    }
+
+    /** @return array<string, mixed> */
+    private function formDefaults(?Expense $expense, string $currency): array
+    {
         return [
             'date' => today()->toDateString(),
-            'amount' => (string) $expense->amount,
-            'debit_bank_id' => $this->rememberedBank($expense, 'a2_debit_bank_id', $expense->currency),
+            'debit_bank_id' => $this->rememberedBank($expense, 'a2_debit_bank_id', $currency),
             'charges_bank_id' => $this->rememberedBank($expense, 'a2_charges_bank_id', 'INR'),
-            'beneficiary_name' => $vendor?->name ?: $expense->payee_name,
-            'country' => $expense->party_country ?: $vendor?->country ?: ($last['country'] ?? null),
-            'address' => $party('address', 'address'),
-            'bank_account' => $party('bank_account', 'bank_account'),
-            'bank_name' => $party('bank_name', 'bank_name'),
-            'bank_address' => $party('bank_address', 'bank_address'),
-            'swift' => $party('swift', 'swift'),
-            'corr_bank_name' => $party('corr_bank_name', 'corr_bank_name'),
-            'corr_bank_address' => $party('corr_bank_address', 'corr_bank_address'),
-            'corr_bank_swift' => $party('corr_bank_swift', 'corr_bank_swift'),
             'purpose' => self::setting('a2_purpose'),
             'charges' => self::setting('a2_charges'),
             'purpose_code' => self::setting('a2_purpose_code'),
             'purpose_desc' => self::setting('a2_purpose_desc'),
             'source_funds' => self::setting('a2_source_funds'),
-            'info' => $info,
         ];
     }
 
@@ -112,11 +149,13 @@ class RemittanceFormService
     }
 
     /** This bill's earlier choice, else the bank used on the last Form A2, else the first saved bank in the currency. */
-    private function rememberedBank(Expense $expense, string $column, string $currency): ?int
+    private function rememberedBank(?Expense $expense, string $column, string $currency): ?int
     {
         $active = fn ($id): ?int => $id && RemittanceBank::whereKey($id)->where('is_active', true)->exists() ? (int) $id : null;
+        $lastForm = RemittanceForm::whereNotNull($column === 'a2_debit_bank_id' ? 'debit_bank_id' : 'charges_bank_id')->latest('id')->value($column === 'a2_debit_bank_id' ? 'debit_bank_id' : 'charges_bank_id');
 
-        return $active($expense->{$column})
+        return $active($expense?->{$column})
+            ?? $active($lastForm)
             ?? $active(Expense::whereNotNull($column)->orderByDesc('a2_prepared_on')->orderByDesc('id')->value($column))
             ?? RemittanceBank::where('is_active', true)->where('currency', $currency)->orderBy('bank_name')->value('id');
     }
@@ -127,10 +166,14 @@ class RemittanceFormService
      * @param  array<string, mixed>  $data
      * @return array{name: string, content: string, missing: array<int, string>}
      */
-    public function prepare(Expense $expense, array $data, User $actor): array
+    public function prepare(?Expense $expense, array $data, User $actor): array
     {
-        abort_unless(self::canPrepare($expense, $actor), 403);
+        abort_unless($expense ? self::canPrepare($expense, $actor) : self::canPrepareAny($actor), 403);
+        if ($expense) {
+            $data['currency'] = $expense->currency;
+        }
         $data = Validator::make($data, [
+            'currency' => ['required', 'in:'.implode(',', array_keys(self::currencies()))],
             'date' => 'required|date',
             'amount' => ['required', 'numeric', 'regex:/^\d+(\.\d{1,2})?$/', 'min:0.01'],
             'debit_bank_id' => 'nullable|integer|exists:remittance_banks,id',
@@ -142,18 +185,19 @@ class RemittanceFormService
 
         $debit = isset($data['debit_bank_id']) ? RemittanceBank::find($data['debit_bank_id']) : null;
         $charges = isset($data['charges_bank_id']) ? RemittanceBank::find($data['charges_bank_id']) : null;
-        $content = $this->document($expense->currency, $data, $debit, $charges);
+        $currency = $data['currency'];
+        $content = $this->document($currency, $data, $debit, $charges);
         $slug = trim(preg_replace('/[^A-Za-z0-9]+/', '-', $data['beneficiary_name']), '-');
         $name = 'A2-'.substr($slug, 0, 40).'-'.$data['date'].'.docx';
 
-        DB::transaction(function () use ($expense, $data, $actor, $name): void {
-            RemittanceForm::create([
-                'expense_id' => $expense->id, 'prepared_by' => $actor->id, 'beneficiary' => $data['beneficiary_name'], 'currency' => $expense->currency, 'amount' => $data['amount'],
+        DB::transaction(function () use ($expense, $data, $actor, $name, $currency): void {
+            $form = RemittanceForm::create([
+                'expense_id' => $expense?->id, 'prepared_by' => $actor->id, 'beneficiary' => $data['beneficiary_name'], 'currency' => $currency, 'amount' => $data['amount'],
                 'debit_bank_id' => $data['debit_bank_id'] ?? null, 'charges_bank_id' => $data['charges_bank_id'] ?? null, 'file_name' => $name, 'data' => $data,
             ]);
-            $vendor = $this->keepPartyDetails($expense, $data);
-            $expense->forceFill(['a2_prepared_on' => today()->toDateString(), 'a2_debit_bank_id' => $data['debit_bank_id'] ?? null, 'a2_charges_bank_id' => $data['charges_bank_id'] ?? null, 'vendor_id' => $expense->vendor_id ?? $vendor->id])->saveQuietly();
-            activity()->causedBy($actor)->performedOn($expense)->withProperties(['beneficiary' => $data['beneficiary_name'], 'amount' => $data['amount'].' '.$expense->currency])->log('Bank Form A2 prepared');
+            $vendor = $this->keepPartyDetails($expense, $data, $currency);
+            $expense?->forceFill(['a2_prepared_on' => today()->toDateString(), 'a2_debit_bank_id' => $data['debit_bank_id'] ?? null, 'a2_charges_bank_id' => $data['charges_bank_id'] ?? null, 'vendor_id' => $expense->vendor_id ?? $vendor->id])->saveQuietly();
+            activity()->causedBy($actor)->performedOn($expense ?? $form)->withProperties(['beneficiary' => $data['beneficiary_name'], 'amount' => $data['amount'].' '.$currency])->log('Bank Form A2 prepared');
         });
 
         $missing = collect(['debit_bank_id' => 'bank account for the remittance', 'charges_bank_id' => 'bank account for charges', 'bank_account' => 'beneficiary account / IBAN', 'bank_name' => 'beneficiary bank', 'swift' => 'SWIFT code'])->filter(fn ($label, $key) => blank($data[$key] ?? null))->values()->all();
@@ -167,10 +211,10 @@ class RemittanceFormService
      *
      * @param  array<string, mixed>  $data
      */
-    private function keepPartyDetails(Expense $expense, array $data): Vendor
+    private function keepPartyDetails(?Expense $expense, array $data, string $currency): Vendor
     {
-        $vendor = $expense->vendor ?? self::vendorNamed($data['beneficiary_name'])
-            ?? Vendor::create(['name' => trim($data['beneficiary_name']), 'vendor_type' => 'Foreign', 'country' => ($data['country'] ?? null) ?: ($expense->party_country ?: 'Not set'), 'default_currency' => $expense->currency]);
+        $vendor = $expense?->vendor ?? self::vendorNamed($data['beneficiary_name'])
+            ?? Vendor::create(['name' => trim($data['beneficiary_name']), 'vendor_type' => 'Foreign', 'country' => ($data['country'] ?? null) ?: ($expense?->party_country ?: 'Not set'), 'default_currency' => $currency]);
         $details = collect(self::VENDOR_FIELDS)->mapWithKeys(fn ($field) => [$field => trim((string) ($data[$field] ?? ''))])->filter(fn ($value) => $value !== '');
         $vendor->update($details->all());
 
