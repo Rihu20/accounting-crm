@@ -8,6 +8,7 @@ use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
@@ -24,7 +25,11 @@ class VendorResource extends CrmResource
 
     public static function form(Schema $schema): Schema
     {
-        return $schema->components([TextInput::make('name')->required()->unique(ignoreRecord: true), Select::make('vendor_type')->options(['Foreign' => 'Foreign', 'Indian' => 'Indian'])->required(), TextInput::make('country')->required(), TextInput::make('email')->email(), TextInput::make('tax_id'), Select::make('default_currency')->options(array_combine(config('crm.expense_currencies'), config('crm.expense_currencies')))->required()->default('USD'), Textarea::make('notes')])->columns(2);
+        return $schema->components([TextInput::make('name')->required()->unique(ignoreRecord: true), Select::make('vendor_type')->options(['Foreign' => 'Foreign', 'Indian' => 'Indian'])->required(), TextInput::make('country')->required(), TextInput::make('email')->email(), TextInput::make('tax_id'), Select::make('default_currency')->options(array_combine(config('crm.expense_currencies'), config('crm.expense_currencies')))->required()->default('USD'),
+            Section::make('Bank details (for Bank Form A2)')->description('Used to fill the bank\'s Form A2 when this vendor is paid abroad.')->columns(2)->collapsible()->columnSpanFull()->schema([
+                Textarea::make('address')->label('Address')->rows(2), TextInput::make('bank_account')->label('Bank account no. / IBAN'), TextInput::make('bank_name')->label('Bank name'), Textarea::make('bank_address')->label('Bank address')->rows(2), TextInput::make('swift')->label('SWIFT / ABA / Sort code / Routing / BLZ'), TextInput::make('corr_bank_name')->label('Correspondent bank name'), Textarea::make('corr_bank_address')->label('Correspondent bank address')->rows(2), TextInput::make('corr_bank_swift')->label('Correspondent bank SWIFT'),
+            ]),
+            Textarea::make('notes')])->columns(2);
     }
 
     public static function table(Table $table): Table

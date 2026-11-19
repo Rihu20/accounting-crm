@@ -34,6 +34,7 @@ class SettingResource extends CrmResource
             'gst_rate' => 'GST rate % on professional fees', 'tax_prefix' => 'Tax invoice prefix', 'proforma_prefix' => 'Proforma prefix', 'credit_note_prefix' => 'Credit note prefix', 'debit_note_prefix' => 'Debit note prefix',
             'sequence_padding' => 'Number digits', 'year_logic' => 'Numbering year (financial / calendar)', 'followup_days' => 'First payment follow-up after (days)', 'followup_repeat_days' => 'Repeat follow-up every (days)',
             'write_off_limit_percent' => 'Short payment write-off limit (% of invoice) – above it only the Director', 'round_off_inr' => 'Round rupee invoices to the nearest rupee (yes / no)',
+            'company_pan' => 'Company PAN (blank: taken from the GSTIN)', 'a2_purpose' => 'Form A2: purpose of remittance', 'a2_purpose_code' => 'Form A2: purpose code', 'a2_purpose_desc' => 'Form A2: purpose code description', 'a2_charges' => 'Form A2: correspondent bank charges (BEN / OUR / SHA)', 'a2_source_funds' => 'Form A2: source of funds',
             'lut_arn' => 'LUT ARN (printed on export invoices)', 'lut_valid_upto' => 'LUT valid up to', 'signature_company_name' => 'Name above signature', 'logo_path' => 'Logo file', 'signature_path' => 'Signature file',
         ];
 

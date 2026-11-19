@@ -100,6 +100,14 @@ class DashboardService
             ->orderByRaw('due_date is null')->orderBy('due_date')->orderBy('invoice_date')->limit($limit)->get();
     }
 
+    /** Paid foreign remittances that need Form 15CA/CB and whose form is not marked Filed. */
+    public function pendingRemittanceForms(int $limit = 6): Collection
+    {
+        return Expense::with('vendor')->where('expense_group', 'foreign')->where('status', 'Paid')->where('requires_15ca_cb', true)
+            ->where(fn ($q) => $q->whereNull('form_status')->orWhereRaw('lower(trim(form_status)) <> ?', ['filed']))
+            ->orderBy('paid_on')->limit($limit)->get();
+    }
+
     public function recentPayments(int $limit = 5): Collection
     {
         $payments = Payment::with('markedBy')->where('reversed', false)->latest('received_on')->latest('id')->limit($limit)->get();

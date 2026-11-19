@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Client;
+use App\Models\Expense;
 
 class MasterDataChecks
 {
@@ -42,5 +43,57 @@ class MasterDataChecks
         });
 
         return $checks;
+    }
+
+    /**
+     * Indian purchases whose PAN, GSTIN or TDS details look wrong. Nothing is changed.
+     *
+     * @return array{count: int, records: array<int, array{id: int, party: string, invoice_no: ?string, problems: array<int, string>}>}
+     */
+    public function indianBills(): array
+    {
+        $out = ['count' => 0, 'records' => []];
+        Expense::query()->where('expense_group', 'indian')->select(['id', 'payee_name', 'vendor_invoice_no', 'pan_number', 'gstin', 'gst_rate', 'taxable_amount', 'tds_rate'])->chunkById(200, function ($expenses) use (&$out): void {
+            foreach ($expenses as $expense) {
+                $problems = self::billProblems($expense);
+                if (! $problems) {
+                    continue;
+                }
+                $out['count']++;
+                if (count($out['records']) < 30) {
+                    $out['records'][] = ['id' => $expense->id, 'party' => (string) $expense->payee_name, 'invoice_no' => $expense->vendor_invoice_no, 'problems' => $problems];
+                }
+            }
+        });
+
+        return $out;
+    }
+
+    /** @return array<int, string> */
+    public static function billProblems(Expense $expense): array
+    {
+        $pan = strtoupper(trim((string) $expense->pan_number));
+        $gstin = strtoupper(trim((string) $expense->gstin));
+        $problems = [];
+        if ((float) $expense->tds_rate > 0 && $pan === '') {
+            $problems[] = 'TDS deducted but no PAN';
+        }
+        if ($pan !== '' && ! preg_match('/^[A-Z]{5}[0-9]{4}[A-Z]$/', $pan)) {
+            $problems[] = 'PAN '.$pan.' does not look valid';
+        }
+        if ($gstin !== '' && ! preg_match('/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/', $gstin)) {
+            $problems[] = 'GSTIN '.$gstin.' does not look valid';
+        }
+        if ($pan !== '' && strlen($gstin) === 15 && substr($gstin, 2, 10) !== $pan) {
+            $problems[] = 'PAN does not match the PAN inside the GSTIN';
+        }
+        if ($gstin !== '' && (float) $expense->gst_rate <= 0 && (float) $expense->taxable_amount > 0) {
+            $problems[] = 'Vendor has a GSTIN but no GST rate is entered';
+        }
+        if ($gstin === '' && (float) $expense->gst_rate > 0) {
+            $problems[] = 'GST charged but the vendor GSTIN is missing';
+        }
+
+        return $problems;
     }
 }

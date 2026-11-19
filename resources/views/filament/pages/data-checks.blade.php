@@ -24,4 +24,20 @@
             </section>
         @endforeach
     </div>
+    @php($bills = app(\App\Services\MasterDataChecks::class)->indianBills())
+    <section class="crm-card">
+        <h3>Indian vendor bills to review <span class="crm-muted">({{ $bills['count'] }})</span></h3>
+        <p>PAN, GSTIN and TDS details on Indian purchases that look wrong. TDS without a PAN may have to be deducted at 20%; GST without the vendor GSTIN gives no input credit.</p>
+        @forelse($bills['records'] as $record)
+            <div class="crm-row">
+                <span><strong>{{ $record['party'] }}</strong><small>{{ $record['invoice_no'] ?: 'No invoice no' }} · {{ implode(' · ', $record['problems']) }}</small></span>
+                <a class="crm-link" href="{{ \App\Filament\Resources\ExpenseResource::getUrl('index', ['tab' => 'indian', 'tableSearch' => $record['invoice_no'] ?: $record['party']]) }}">Review</a>
+            </div>
+        @empty
+            <p>✓ No issues found in this check.</p>
+        @endforelse
+        @if($bills['count'] > count($bills['records']))
+            <p class="crm-muted">Showing {{ count($bills['records']) }} of {{ $bills['count'] }} bills.</p>
+        @endif
+    </section>
 </x-filament-panels::page>

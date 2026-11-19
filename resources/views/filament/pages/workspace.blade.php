@@ -96,6 +96,19 @@
         </section>
     </div>
 
+    @php($forms = $d->pendingRemittanceForms())
+    <section class="crm-card" style="margin-top:16px">
+        <h3>Form 15CA/CB to file <span class="crm-badge {{ $forms->isEmpty() ? 'green' : 'red' }}">{{ $forms->count() }}{{ $forms->count() >= 6 ? '+' : '' }} pending</span> <a href="{{ $exp }}?tab=foreign">Open bills</a></h3>
+        @forelse($forms as $e)
+            <a class="crm-row" href="{{ $exp }}?tab=foreign">
+                <span><strong>{{ $e->payee_name ?: $e->vendor?->name ?: 'Vendor' }}</strong><small>{{ $e->vendor_invoice_no ?: 'No invoice no' }} · paid {{ $e->paid_on ? \Illuminate\Support\Carbon::parse($e->paid_on)->format('d.m.Y') : '-' }} · form {{ $e->form_status ?: 'not started' }}</small></span>
+                <span class="amt">{{ $fmt($e->amount, $e->currency) }}<br><span class="crm-badge red">File form</span></span>
+            </a>
+        @empty
+            <div class="crm-empty"><span>✓</span><strong>Nothing to file</strong>Every paid foreign remittance has its form marked Filed.</div>
+        @endforelse
+    </section>
+
     <section class="crm-card" style="margin-top:16px">
         <h3>Latest receipts</h3>
         @forelse($d->recentPayments() as $p)

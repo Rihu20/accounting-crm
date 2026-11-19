@@ -17,7 +17,7 @@ class Setting extends Model
     {
         static::saving(function ($s) {
             $rules = match ($s->key) {
-                'gst_rate' => 'required|numeric|min:0|max:100','sequence_padding' => 'required|integer|min:4|max:10','year_logic' => 'required|in:calendar,financial','followup_days','followup_repeat_days' => 'required|integer|min:1','write_off_limit_percent' => 'required|numeric|min:0|max:100','round_off_inr' => 'required|in:yes,no',default => 'nullable|string|max:10000'
+                'gst_rate' => 'required|numeric|min:0|max:100','sequence_padding' => 'required|integer|min:4|max:10','year_logic' => 'required|in:calendar,financial','followup_days','followup_repeat_days' => 'required|integer|min:1','write_off_limit_percent' => 'required|numeric|min:0|max:100','round_off_inr' => 'required|in:yes,no','a2_charges' => 'required|in:BEN,OUR,SHA','company_pan' => ['nullable', 'regex:/^[A-Z]{5}[0-9]{4}[A-Z]$/'],default => 'nullable|string|max:10000'
             };
             Validator::make(['value' => $s->value], ['value' => $rules])->validate();
         });

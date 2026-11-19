@@ -83,7 +83,7 @@ it('keeps exchange values unavailable until a rate is entered and uses one for I
 
 it('calculates Indian purchase GST split TDS and payable without modifying a foreign expense', function () {
     $base = ['expense_type' => 'vendor', 'invoice_date' => today(), 'currency' => 'INR', 'paid_by' => 'company_bank', 'paid_by_user_id' => $this->admin->id, 'category' => 'Rent', 'status' => 'Unpaid'];
-    $expense = Expense::create($base + ['expense_group' => 'indian', 'taxable_amount' => '36300', 'gst_mode' => 'cgst_sgst', 'gst_rate' => '18', 'tds_rate' => '2', 'pan_number' => 'TESTPAN', 'gstin' => 'TESTGST']);
+    $expense = Expense::create($base + ['expense_group' => 'indian', 'taxable_amount' => '36300', 'gst_mode' => 'cgst_sgst', 'gst_rate' => '18', 'tds_section' => '194I', 'tds_rate' => '2', 'pan_number' => 'TESTPAN', 'gstin' => 'TESTGST']);
     expect($expense->amount)->toBe('42108.00')->and($expense->gst_amount)->toBe('6534.00')->and($expense->tds_amount)->toBe('726.00')
         ->and($expense->cgst)->toBe('3267.00')->and($expense->sgst)->toBe('3267.00')->and($expense->igst)->toBe('0.00');
     $expense->update(['gst_mode' => 'igst']);
@@ -97,7 +97,7 @@ it('reads GST and TDS back from the database as money, not raw column values', f
     $expense = Expense::create([
         'expense_type' => 'vendor', 'invoice_date' => today(), 'currency' => 'INR', 'paid_by' => 'company_bank',
         'paid_by_user_id' => $this->admin->id, 'category' => 'Rent', 'status' => 'Unpaid', 'expense_group' => 'indian',
-        'taxable_amount' => '10000', 'gst_mode' => 'igst', 'gst_rate' => '18', 'tds_rate' => '10',
+        'taxable_amount' => '10000', 'gst_mode' => 'igst', 'gst_rate' => '18', 'tds_section' => '194J', 'tds_rate' => '10',
     ]);
 
     $stored = $expense->fresh();
