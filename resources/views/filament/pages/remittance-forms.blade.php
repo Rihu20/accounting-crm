@@ -12,6 +12,20 @@
             <p class="crm-muted">{{ $this->bankHint() }}</p>
         @endforelse
     </section>
+    @php($parties = \App\Services\RemittanceFormService::parties())
+    <section class="crm-card">
+        <h3>Parties paid by Form A2 <span class="crm-muted">({{ $parties->count() }})</span></h3>
+        <p>Every beneficiary a form was made for, with the bank details used on the latest form. These details are also saved to the vendor and filled in next time.</p>
+        @forelse($parties as $party)
+            @php($d = $party['form']->data)
+            <div class="crm-row">
+                <span><strong>{{ $party['form']->beneficiary }}</strong><small>A/c {{ $d['bank_account'] ?? '-' ?: '-' }} · {{ $d['bank_name'] ?? '' ?: 'bank not set' }}{{ ($d['bank_address'] ?? '') ? ', '.$d['bank_address'] : '' }} · SWIFT {{ $d['swift'] ?? '' ?: '-' }}{{ ($d['address'] ?? '') ? ' · '.$d['address'] : '' }}{{ ($d['country'] ?? '') ? ' · '.$d['country'] : '' }}</small></span>
+                <span class="amt"><small>last form</small> {{ \Illuminate\Support\Carbon::parse($d['date'] ?? $party['form']->created_at)->format('d.m.Y') }}<br><small>{{ $party['count'] }} form{{ $party['count'] === 1 ? '' : 's' }} since {{ \Illuminate\Support\Carbon::parse($party['first'])->format('d.m.Y') }}</small></span>
+            </div>
+        @empty
+            <p class="crm-muted">No party yet. Parties appear here once a form is made for them.</p>
+        @endforelse
+    </section>
     @php($forms = $this->preparedForms())
     <section class="crm-card">
         <h3>Forms prepared <span class="crm-muted">({{ $forms->count() }}{{ $forms->count() >= 50 ? ', latest 50' : '' }})</span></h3>

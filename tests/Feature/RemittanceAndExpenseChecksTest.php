@@ -72,17 +72,35 @@ it('fills Form A2 from the bill, the vendor master and the settings', function (
         ->and(Activity::where('description', 'Bank Form A2 prepared')->where('subject_id', $this->bill->id)->exists())->toBeTrue();
 });
 
-it('names the blank bank details and keeps typed ones on the vendor only when asked', function () {
+it('names the blank bank details and always keeps typed ones on the vendor without erasing saved ones', function () {
     $this->vendor->update(['bank_account' => null, 'swift' => null]);
     $service = app(RemittanceFormService::class);
     $form = $service->prepare($this->bill, $service->defaults($this->bill), $this->accountant);
     expect($form['missing'])->toBe(['beneficiary account / IBAN', 'SWIFT code']);
 
-    $service->prepare($this->bill, ['bank_account' => 'DE89370400440532013000', 'swift' => 'COBADEFF'] + $service->defaults($this->bill), $this->accountant);
-    expect($this->vendor->fresh()->bank_account)->toBeNull();
+    $service->prepare($this->bill, ['bank_account' => 'DE89370400440532013000', 'swift' => 'COBADEFF', 'bank_address' => 'Frankfurt'] + $service->defaults($this->bill), $this->accountant);
+    expect($this->vendor->fresh())->bank_account->toBe('DE89370400440532013000')->swift->toBe('COBADEFF')->bank_address->toBe('Frankfurt');
 
-    $service->prepare($this->bill, ['bank_account' => 'DE89370400440532013000', 'swift' => 'COBADEFF', 'save_vendor' => true] + $service->defaults($this->bill), $this->accountant);
-    expect($this->vendor->fresh())->bank_account->toBe('DE89370400440532013000')->swift->toBe('COBADEFF');
+    $service->prepare($this->bill, ['bank_address' => '', 'swift' => 'COBADEFF2'] + $service->defaults($this->bill), $this->accountant);
+    expect($this->vendor->fresh())->bank_address->toBe('Frankfurt')->swift->toBe('COBADEFF2');
+});
+
+it('saves a party paid without a vendor, links the bill and fills its next form from it', function () {
+    $service = app(RemittanceFormService::class);
+    $first = Expense::create(array_replace($this->base, ['vendor_id' => null, 'payee_name' => 'Wolf Mendez Abogados', 'party_country' => 'Colombia']) + ['vendor_invoice_no' => 'PI-1']);
+    $service->prepare($first, ['date' => '2026-06-12', 'address' => 'AK 7 #113-43 Bogota', 'bank_account' => '1040121773', 'bank_name' => 'Helm Bank USA', 'bank_address' => '999 Brickell Avenue Miami', 'swift' => 'HELMUS33'] + $service->defaults($first), $this->accountant);
+
+    $vendor = Vendor::where('name', 'Wolf Mendez Abogados')->sole();
+    expect($vendor)->vendor_type->toBe('Foreign')->country->toBe('Colombia')->bank_account->toBe('1040121773')->swift->toBe('HELMUS33')
+        ->and($first->fresh()->vendor_id)->toBe($vendor->id);
+
+    $second = Expense::create(array_replace($this->base, ['vendor_id' => null, 'payee_name' => 'WOLF MENDEZ ABOGADOS ', 'party_country' => 'Colombia']) + ['vendor_invoice_no' => 'PI-2']);
+    expect($service->defaults($second))->toMatchArray(['beneficiary_name' => 'Wolf Mendez Abogados', 'bank_account' => '1040121773', 'bank_name' => 'Helm Bank USA', 'swift' => 'HELMUS33', 'address' => 'AK 7 #113-43 Bogota']);
+    $service->prepare($second, ['date' => '2026-11-19'] + $service->defaults($second), $this->accountant);
+
+    $party = RemittanceFormService::parties()->firstWhere(fn ($p) => $p['form']->beneficiary === 'Wolf Mendez Abogados');
+    expect($party['count'])->toBe(2)->and($party['first'])->toBe('2026-06-12')->and($party['form']->data['date'])->toBe('2026-11-19');
+    $this->get(RemittanceForms::getUrl())->assertOk()->assertSee('Parties paid by Form A2')->assertSee('Wolf Mendez Abogados')->assertSee('1040121773')->assertSee('19.11.2026')->assertSee('2 forms since 12.06.2026');
 });
 
 it('keeps the remittance bank and the charges bank apart and offers the last ones used next time', function () {

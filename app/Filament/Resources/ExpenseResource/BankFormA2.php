@@ -11,7 +11,6 @@ use Filament\Forms\Components\Field;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
-use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Section;
 
@@ -33,7 +32,7 @@ class BankFormA2
                     self::bankSelect('debit_bank_id', 'Bank account debited for the remittance (RFC / EEFC)', $record->currency, $record),
                     self::bankSelect('charges_bank_id', 'Bank account debited for charges', 'INR', $record),
                 ]),
-                Section::make('Beneficiary')->description('From the vendor master. Fill what is missing and tick the box to keep it for next time.')->columns(2)->schema([
+                Section::make('Beneficiary')->description('From the vendor master or this party\'s last form. Whatever you fill here is saved to the vendor for next time.')->columns(2)->schema([
                     TextInput::make('beneficiary_name')->label('Beneficiary name')->required(),
                     TextInput::make('country')->label('Country providing the services'),
                     Textarea::make('address')->label('Beneficiary address')->rows(2),
@@ -43,9 +42,7 @@ class BankFormA2
                     Textarea::make('bank_address')->label('Beneficiary bank address')->rows(2),
                     TextInput::make('corr_bank_name')->label('Correspondent bank name'),
                     TextInput::make('corr_bank_swift')->label('Correspondent bank SWIFT'),
-                    Textarea::make('corr_bank_address')->label('Correspondent bank address')->rows(2),
-                    Toggle::make('save_vendor')->label('Save these beneficiary details to the vendor master')->visible(fn () => $record->vendor_id !== null)->columnSpanFull(),
-                ]),
+                    Textarea::make('corr_bank_address')->label('Correspondent bank address')->rows(2),                ]),
                 Section::make('Purpose')->columns(2)->schema([
                     Textarea::make('purpose')->label('Purpose of remittance')->rows(2),
                     Select::make('charges')->label('Correspondent bank charges')->options(['BEN' => 'BEN', 'OUR' => 'OUR', 'SHA' => 'SHA'])->required(),
