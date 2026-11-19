@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources;
 
+use App\Filament\Resources\ExpenseResource\BankFormA2;
 use App\Models\Expense;
 use App\Models\PatentOffice;
 use App\Services\ExpenseGroups;
@@ -9,7 +10,6 @@ use App\Services\ExpenseService;
 use App\Services\Money;
 use App\Services\OptimisticUpdate;
 use App\Services\PortalWorkflow;
-use App\Services\RemittanceFormService;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\DatePicker;
@@ -20,7 +20,6 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
-use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
@@ -148,48 +147,7 @@ class ExpenseResource extends CrmResource
                 ->modalDescription(fn (Expense $record) => ($record->payment_request['requested_by_name'] ?? 'Paralegal').': '.($record->payment_request['note'] ?? 'Please pay this invoice.'))
                 ->schema([Select::make('decision')->options(['approve' => 'Approve payment', 'reject' => 'Reject'])->required()])
                 ->action(fn (Expense $record, array $data) => app(PortalWorkflow::class)->decideExpense($record, auth()->user(), $data['decision'] === 'approve')),
-            Action::make('bank_form_a2')->label(fn (Expense $record) => 'Bank Form A2'.($record->a2_prepared_on ? ' (prepared '.$record->a2_prepared_on->format('d.m.Y').')' : ''))->icon('heroicon-o-building-library')->color('gray')
-                ->visible(fn (Expense $record) => RemittanceFormService::canPrepare($record, auth()->user()))
-                ->modalHeading(fn (Expense $record) => 'Bank Form A2 – '.($record->payee_name ?: $record->vendor?->name ?: 'vendor'))
-                ->modalDescription('Fills the bank\'s Form A2 from this bill. Check every detail, then print, sign and hand it to the bank. Nothing is sent to the bank or the income-tax portal.')
-                ->modalSubmitActionLabel('Download Form A2 (Word)')->modalWidth('4xl')
-                ->fillForm(fn (Expense $record) => app(RemittanceFormService::class)->defaults($record))
-                ->schema(fn (Expense $record) => [
-                    Section::make('Remittance')->columns(2)->schema([
-                        DatePicker::make('date')->required(),
-                        TextInput::make('amount')->label('Amount ('.$record->currency.')')->numeric()->minValue(0.01)->required(),
-                        Select::make('bank_account_id')->label('Bank (AD branch) and FCY / EEFC account')->options(app(RemittanceFormService::class)->bankOptions($record->currency))->helperText('From Bank accounts, in the bill currency.'),
-                        TextInput::make('charges_account')->label('Account no. for charges (INR)'),
-                    ]),
-                    Section::make('Beneficiary')->description('From the vendor master. Fill what is missing and tick the box to keep it for next time.')->columns(2)->schema([
-                        TextInput::make('beneficiary_name')->label('Beneficiary name')->required(),
-                        TextInput::make('country')->label('Country providing the services'),
-                        Textarea::make('address')->label('Beneficiary address')->rows(2),
-                        TextInput::make('bank_account')->label('Account no. / IBAN'),
-                        TextInput::make('bank_name')->label('Beneficiary bank name'),
-                        TextInput::make('swift')->label('SWIFT / ABA / Sort code / Routing / BLZ'),
-                        Textarea::make('bank_address')->label('Beneficiary bank address')->rows(2),
-                        TextInput::make('corr_bank_name')->label('Correspondent bank name'),
-                        TextInput::make('corr_bank_swift')->label('Correspondent bank SWIFT'),
-                        Textarea::make('corr_bank_address')->label('Correspondent bank address')->rows(2),
-                        Toggle::make('save_vendor')->label('Save these beneficiary details to the vendor master')->visible(fn () => $record->vendor_id !== null)->columnSpanFull(),
-                    ]),
-                    Section::make('Purpose')->columns(2)->schema([
-                        Textarea::make('purpose')->label('Purpose of remittance')->rows(2),
-                        Select::make('charges')->label('Correspondent bank charges')->options(['BEN' => 'BEN', 'OUR' => 'OUR', 'SHA' => 'SHA'])->required(),
-                        TextInput::make('purpose_code')->label('Purpose code'),
-                        TextInput::make('purpose_desc')->label('Purpose code description'),
-                        TextInput::make('source_funds')->label('Source of funds'),
-                        Textarea::make('info')->label('Additional information')->rows(2),
-                    ]),
-                ])
-                ->action(function (Expense $record, array $data) {
-                    $form = app(RemittanceFormService::class)->prepare($record, $data, auth()->user());
-                    $note = Notification::make()->title('Form A2 ready');
-                    $form['missing'] ? $note->warning()->body('Still blank: '.implode(', ', $form['missing']).'. Fill these in before signing.')->persistent()->send() : $note->success()->body('Check it, sign it and hand it to the bank.')->send();
-
-                    return response()->streamDownload(fn () => print ($form['content']), $form['name'], ['Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']);
-                }),
+            BankFormA2::action(),
             Action::make('view_bill')->label('View PDF / receipt')->visible(fn ($record) => filled($record->bill_path))->url(fn ($record) => route('crm.expense-file', $record))->openUrlInNewTab(), EditAction::make()->visible(fn (Model $record) => self::canEdit($record))->using(fn (Model $record, array $data) => app(OptimisticUpdate::class)->save($record, $data)), Action::make('paid')->label('Mark paid')->icon('heroicon-o-banknotes')->color('success')->visible(fn ($record) => auth()->user()->allowed('accounting.expenses.pay') && $record->expense_type === 'vendor' && $record->status === 'Unpaid')->schema([DatePicker::make('paid_on')->default(today())->required(), TextInput::make('paid_ref')->label('Transaction reference')->required(), TextInput::make('payment_bank_name')->label('Bank name (payment transferred)')->maxLength(255)])->action(fn ($record, array $data) => app(ExpenseService::class)->paid($record, $data, auth()->user())), Action::make('unpaid')->label('Mark unpaid')->icon('heroicon-o-arrow-uturn-left')->color('danger')->visible(fn ($record) => auth()->user()->allowed('accounting.expenses.pay') && $record->expense_type === 'vendor' && $record->status === 'Paid')->schema([Textarea::make('reason')->required()->maxLength(500)])->action(fn ($record, array $data) => app(ExpenseService::class)->unpaid($record, $data['reason'], auth()->user())), Action::make('reimburse')->visible(fn ($record) => auth()->user()->allowed('accounting.expenses.pay') && $record->expense_type === 'owner' && $record->reimbursement_status === 'Pending')->schema([Select::make('reimbursement_status')->options(['Reimbursed' => 'Reimbursed', 'Not reimbursable' => 'Not reimbursable'])->required(), DatePicker::make('reimbursed_on')->default(today())->required(), TextInput::make('reimbursed_ref')->required()])->action(fn ($record, array $data) => app(ExpenseService::class)->reimburse($record, $data, auth()->user()))], position: RecordActionsPosition::BeforeColumns)->emptyStateHeading('No expenses here yet')->emptyStateIcon('heroicon-o-receipt-percent')->defaultSort('invoice_date', 'desc')->defaultPaginationPageOption(25);
     }
 

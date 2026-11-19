@@ -2,9 +2,11 @@
 
 use App\Filament\Pages\ActivityLog;
 use App\Filament\Pages\DataChecks;
+use App\Filament\Pages\RemittanceForms;
 use App\Filament\Pages\Workspace;
 use App\Filament\Resources\ExpenseResource\Pages\ManageRecords as ExpensePage;
 use App\Models\Expense;
+use App\Models\RemittanceBank;
 use App\Models\User;
 use App\Models\Vendor;
 use App\Services\DashboardService;
@@ -35,6 +37,8 @@ beforeEach(function () {
     $this->vendor = Vendor::create(['name' => 'Harness, Dickey & Pierce', 'country' => 'United States', 'vendor_type' => 'Foreign', 'default_currency' => 'USD', 'bank_account' => '000123456789', 'bank_name' => 'Comerica Bank', 'swift' => 'MNBDUS33']);
     $this->base = ['expense_type' => 'vendor', 'expense_group' => 'foreign', 'invoice_date' => today(), 'amount' => '820.50', 'currency' => 'USD', 'paid_by' => 'company_bank', 'paid_by_user_id' => $this->accountant->id, 'category' => 'Law firm', 'status' => 'Unpaid', 'vendor_id' => $this->vendor->id, 'payee_name' => 'Harness, Dickey & Pierce'];
     $this->bill = Expense::create($this->base + ['vendor_invoice_no' => '699702', 'our_ref' => 'P25104305US']);
+    $this->usdBank = RemittanceBank::create(['bank_name' => 'ICICI Bank', 'branch' => 'Noida Sec 18', 'account_no' => 'EEFC-111', 'currency' => 'USD', 'account_type' => 'EEFC']);
+    $this->inrBank = RemittanceBank::create(['bank_name' => 'HDFC Bank', 'branch' => 'Delhi', 'account_no' => 'CUR-999', 'currency' => 'INR', 'account_type' => 'Current']);
 });
 
 function docxText(string $content): string
@@ -53,7 +57,7 @@ function docxText(string $content): string
 it('fills Form A2 from the bill, the vendor master and the settings', function () {
     $service = app(RemittanceFormService::class);
     $data = $service->defaults($this->bill);
-    expect($data)->toMatchArray(['beneficiary_name' => 'Harness, Dickey & Pierce', 'bank_account' => '000123456789', 'swift' => 'MNBDUS33', 'charges' => 'OUR', 'purpose_code' => 'S1004', 'amount' => '820.50'])
+    expect($data)->toMatchArray(['beneficiary_name' => 'Harness, Dickey & Pierce', 'bank_account' => '000123456789', 'swift' => 'MNBDUS33', 'charges' => 'OUR', 'purpose_code' => 'S1004', 'amount' => '820.50', 'debit_bank_id' => $this->usdBank->id, 'charges_bank_id' => $this->inrBank->id])
         ->and($data['info'])->toContain('Invoice 699702', 'Our ref P25104305US');
 
     $form = $service->prepare($this->bill, $data, $this->accountant);
@@ -61,7 +65,7 @@ it('fills Form A2 from the bill, the vendor master and the settings', function (
 
     expect($form['name'])->toBe('A2-Harness-Dickey-Pierce-'.today()->toDateString().'.docx')
         ->and($form['missing'])->toBe([])
-        ->and($text)->toContain('FORM A2', 'Harness, Dickey & Pierce', '000123456789', 'MNBDUS33', 'USD 820.50', 'USD Eight Hundred Twenty and 50/100 Only', 'S1004', '☒ OUR', 'ABBCA7682H')
+        ->and($text)->toContain('FORM A2', 'Harness, Dickey & Pierce', '000123456789', 'MNBDUS33', 'USD 820.50', 'USD Eight Hundred Twenty and 50/100 Only', 'S1004', '☒ OUR', 'ABBCA7682H', 'ICICI Bank, Noida Sec 18', 'EEFC-111', 'CUR-999 (HDFC Bank, Delhi)')
         ->and($this->bill->fresh()->a2_prepared_on->isToday())->toBeTrue()
         ->and(Activity::where('description', 'Bank Form A2 prepared')->where('subject_id', $this->bill->id)->exists())->toBeTrue();
 });
@@ -77,6 +81,43 @@ it('names the blank bank details and keeps typed ones on the vendor only when as
 
     $service->prepare($this->bill, ['bank_account' => 'DE89370400440532013000', 'swift' => 'COBADEFF', 'save_vendor' => true] + $service->defaults($this->bill), $this->accountant);
     expect($this->vendor->fresh())->bank_account->toBe('DE89370400440532013000')->swift->toBe('COBADEFF');
+});
+
+it('keeps the remittance bank and the charges bank apart and offers the last ones used next time', function () {
+    $service = app(RemittanceFormService::class);
+    $otherInr = RemittanceBank::create(['bank_name' => 'SBI', 'account_no' => 'SBI-555', 'currency' => 'INR']);
+    $service->prepare($this->bill, ['charges_bank_id' => $otherInr->id] + $service->defaults($this->bill), $this->accountant);
+    expect($this->bill->fresh())->a2_debit_bank_id->toBe($this->usdBank->id)->a2_charges_bank_id->toBe($otherInr->id);
+
+    $next = Expense::create($this->base + ['vendor_invoice_no' => '699800']);
+    expect($service->defaults($next))->toMatchArray(['debit_bank_id' => $this->usdBank->id, 'charges_bank_id' => $otherInr->id]);
+
+    $otherInr->update(['is_active' => false]);
+    expect($service->defaults($next)['charges_bank_id'])->toBe($this->inrBank->id)
+        ->and(RemittanceFormService::bankOptions('INR'))->not->toHaveKey($otherInr->id)
+        ->and(RemittanceFormService::bankOptions('INR', [$otherInr->id]))->toHaveKey($otherInr->id)
+        ->and(array_key_first(RemittanceFormService::bankOptions('INR')))->toBe($this->inrBank->id);
+});
+
+it('has its own Bank Form A2 page with saved banks and the foreign bills', function () {
+    $rupees = Expense::create(array_replace($this->base, ['expense_group' => 'indian', 'currency' => 'INR', 'vendor_invoice_no' => 'R-9', 'category' => 'Rent']));
+    $this->get(RemittanceForms::getUrl())->assertOk()->assertSee('Our bank accounts')->assertSee('EEFC-111')->assertSee('CUR-999');
+
+    Livewire::test(RemittanceForms::class)
+        ->assertCanSeeTableRecords([$this->bill])->assertCanNotSeeTableRecords([$rupees])
+        ->callAction('addBank', ['bank_name' => 'Axis Bank', 'branch' => 'Gurugram', 'account_no' => 'AX-1', 'currency' => 'EUR', 'account_type' => 'EEFC'])
+        ->assertHasNoActionErrors()
+        ->callAction('editBank', ['account_no' => 'EEFC-112'], ['bank' => $this->usdBank->id])
+        ->callAction('removeBank', [], ['bank' => $this->inrBank->id])
+        ->callTableAction('bank_form_a2', $this->bill)
+        ->assertFileDownloaded('A2-Harness-Dickey-Pierce-'.today()->toDateString().'.docx');
+
+    expect(RemittanceBank::where('account_no', 'AX-1')->value('branch'))->toBe('Gurugram')
+        ->and($this->usdBank->fresh()->account_no)->toBe('EEFC-112')
+        ->and($this->inrBank->fresh()->is_active)->toBeFalse()
+        ->and($this->bill->fresh()->a2_prepared_on)->not->toBeNull();
+
+    $this->actingAs($this->paralegal)->get(RemittanceForms::getUrl())->assertForbidden();
 });
 
 it('offers Form A2 only on foreign-currency vendor bills and only to those who pay or edit them', function () {

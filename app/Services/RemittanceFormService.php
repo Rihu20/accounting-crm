@@ -2,8 +2,8 @@
 
 namespace App\Services;
 
-use App\Models\BankAccount;
 use App\Models\Expense;
+use App\Models\RemittanceBank;
 use App\Models\Setting;
 use App\Models\User;
 use Illuminate\Support\Carbon;
@@ -39,8 +39,6 @@ class RemittanceFormService
     {
         $expense->loadMissing('vendor');
         $vendor = $expense->vendor;
-        $bank = $this->foreignAccounts($expense->currency)->first(fn (BankAccount $b) => filled($expense->payment_bank_name) && str_starts_with((string) $expense->payment_bank_name, (string) $b->bank_name))
-            ?? $this->foreignAccounts($expense->currency)->first();
         $info = collect([
             $expense->vendor_invoice_no ? 'Invoice '.$expense->vendor_invoice_no.($expense->invoice_date ? ' dated '.$expense->invoice_date->format('d.m.Y') : '') : null,
             $expense->our_ref ? 'Our ref '.$expense->our_ref : null,
@@ -49,8 +47,8 @@ class RemittanceFormService
         return [
             'date' => today()->toDateString(),
             'amount' => (string) $expense->amount,
-            'bank_account_id' => $bank?->id,
-            'charges_account' => $bank ? (string) BankAccount::where('is_active', true)->where('currency', 'INR')->where('bank_name', $bank->bank_name)->value('account_no') : '',
+            'debit_bank_id' => $this->rememberedBank($expense, 'a2_debit_bank_id', $expense->currency),
+            'charges_bank_id' => $this->rememberedBank($expense, 'a2_charges_bank_id', 'INR'),
             'beneficiary_name' => $vendor?->name ?: $expense->payee_name,
             'country' => $expense->party_country ?: $vendor?->country,
             'address' => $vendor?->address,
@@ -71,10 +69,26 @@ class RemittanceFormService
         ];
     }
 
-    /** @return array<int, string> */
-    public function bankOptions(string $currency): array
+    /**
+     * Saved banks, those in the given currency first. A bank used on this bill stays listed even if it was removed later.
+     *
+     * @return array<int, string>
+     */
+    public static function bankOptions(?string $currency = null, array $keep = []): array
     {
-        return $this->foreignAccounts($currency)->mapWithKeys(fn (BankAccount $b) => [$b->id => $b->bank_name.' '.$b->currency.' · '.($b->account_no ?: 'account no. not set')])->all();
+        return RemittanceBank::query()->where(fn ($q) => $q->where('is_active', true)->orWhereIn('id', array_filter($keep)))
+            ->get()->sortBy(fn (RemittanceBank $b) => [$b->currency === $currency ? 0 : 1, $b->bank_name, $b->currency])
+            ->mapWithKeys(fn (RemittanceBank $b) => [$b->id => $b->label()])->all();
+    }
+
+    /** This bill's earlier choice, else the bank used on the last Form A2, else the first saved bank in the currency. */
+    private function rememberedBank(Expense $expense, string $column, string $currency): ?int
+    {
+        $active = fn ($id): ?int => $id && RemittanceBank::whereKey($id)->where('is_active', true)->exists() ? (int) $id : null;
+
+        return $active($expense->{$column})
+            ?? $active(Expense::whereNotNull($column)->orderByDesc('a2_prepared_on')->orderByDesc('id')->value($column))
+            ?? RemittanceBank::where('is_active', true)->where('currency', $currency)->orderBy('bank_name')->value('id');
     }
 
     /**
@@ -89,25 +103,27 @@ class RemittanceFormService
         $data = Validator::make($data, [
             'date' => 'required|date',
             'amount' => ['required', 'numeric', 'regex:/^\d+(\.\d{1,2})?$/', 'min:0.01'],
-            'bank_account_id' => 'nullable|integer|exists:bank_accounts,id',
+            'debit_bank_id' => 'nullable|integer|exists:remittance_banks,id',
+            'charges_bank_id' => 'nullable|integer|exists:remittance_banks,id',
             'beneficiary_name' => 'required|string|max:255',
             'charges' => 'required|in:BEN,OUR,SHA',
             'save_vendor' => 'boolean',
-        ] + collect(['charges_account', 'country', 'bank_account', 'bank_name', 'swift', 'corr_bank_name', 'corr_bank_swift', 'purpose_code', 'purpose_desc', 'source_funds'])->mapWithKeys(fn ($k) => [$k => 'nullable|string|max:255'])->all()
+        ] + collect(['country', 'bank_account', 'bank_name', 'swift', 'corr_bank_name', 'corr_bank_swift', 'purpose_code', 'purpose_desc', 'source_funds'])->mapWithKeys(fn ($k) => [$k => 'nullable|string|max:255'])->all()
           + collect(['address', 'bank_address', 'corr_bank_address', 'purpose', 'info'])->mapWithKeys(fn ($k) => [$k => 'nullable|string|max:2000'])->all())->validate();
 
-        $bank = isset($data['bank_account_id']) ? BankAccount::find($data['bank_account_id']) : null;
-        $content = $this->document($expense, $data, $bank);
+        $debit = isset($data['debit_bank_id']) ? RemittanceBank::find($data['debit_bank_id']) : null;
+        $charges = isset($data['charges_bank_id']) ? RemittanceBank::find($data['charges_bank_id']) : null;
+        $content = $this->document($expense, $data, $debit, $charges);
 
         DB::transaction(function () use ($expense, $data, $actor): void {
             if (($data['save_vendor'] ?? false) && $expense->vendor) {
                 $expense->vendor->update(['address' => $data['address'] ?? null, 'bank_account' => $data['bank_account'] ?? null, 'bank_name' => $data['bank_name'] ?? null, 'bank_address' => $data['bank_address'] ?? null, 'swift' => $data['swift'] ?? null, 'corr_bank_name' => $data['corr_bank_name'] ?? null, 'corr_bank_address' => $data['corr_bank_address'] ?? null, 'corr_bank_swift' => $data['corr_bank_swift'] ?? null]);
             }
-            $expense->forceFill(['a2_prepared_on' => today()->toDateString()])->saveQuietly();
+            $expense->forceFill(['a2_prepared_on' => today()->toDateString(), 'a2_debit_bank_id' => $data['debit_bank_id'] ?? null, 'a2_charges_bank_id' => $data['charges_bank_id'] ?? null])->saveQuietly();
             activity()->causedBy($actor)->performedOn($expense)->withProperties(['beneficiary' => $data['beneficiary_name'], 'amount' => $data['amount'].' '.$expense->currency])->log('Bank Form A2 prepared');
         });
 
-        $missing = collect(['bank_account' => 'beneficiary account / IBAN', 'bank_name' => 'beneficiary bank', 'swift' => 'SWIFT code'])->filter(fn ($label, $key) => blank($data[$key] ?? null))->values()->all();
+        $missing = collect(['debit_bank_id' => 'bank account for the remittance', 'charges_bank_id' => 'bank account for charges', 'bank_account' => 'beneficiary account / IBAN', 'bank_name' => 'beneficiary bank', 'swift' => 'SWIFT code'])->filter(fn ($label, $key) => blank($data[$key] ?? null))->values()->all();
         $slug = trim(preg_replace('/[^A-Za-z0-9]+/', '-', $data['beneficiary_name']), '-');
 
         return ['name' => 'A2-'.substr($slug, 0, 40).'-'.$data['date'].'.docx', 'content' => $content, 'missing' => $missing];
@@ -131,18 +147,13 @@ class RemittanceFormService
         return (string) (Setting::get($key) ?: self::DEFAULTS[$key]);
     }
 
-    private function foreignAccounts(string $currency)
-    {
-        return BankAccount::where('is_active', true)->where('currency', $currency)->orderByDesc('is_default')->orderBy('bank_name')->get();
-    }
-
     /** @param  array<string, mixed>  $data */
-    private function document(Expense $expense, array $data, ?BankAccount $bank): string
+    private function document(Expense $expense, array $data, ?RemittanceBank $debit, ?RemittanceBank $charges): string
     {
         $currency = $expense->currency;
         $amount = number_format((float) $data['amount'], $currency === 'JPY' ? 0 : 2);
         $company = (string) Setting::get('company_name', '');
-        $bankName = (string) ($bank?->bank_name ?? '');
+        $bankName = (string) ($debit ? $debit->bank_name.($debit->branch ? ', '.$debit->branch : '') : '');
         $start = today()->month >= 4 ? today()->year : today()->year - 1;
 
         $word = new PhpWord;
@@ -190,9 +201,9 @@ class RemittanceFormService
         $line($s, ['PAN No.  ', $value(self::companyPan())]);
         $line($s, ['Address  ', $value((string) Setting::get('company_address', ''))]);
         $line($s, ['Authorise  ', $value($bankName), ' (Name of AD branch)']);
-        $line($s, ['To debit my RFC/EEFC A/c. No.  ', $value($bank?->account_no), '  for (FCY & amount)  ', [$currency.' '.$amount, true]]);
+        $line($s, ['To debit my RFC/EEFC A/c. No.  ', $value($debit?->account_no), '  for (FCY & amount)  ', [$currency.' '.$amount, true]]);
         $line($s, ['Savings Bank/Current A/c. No '.$blank.' for (FCY & amount) '.$blank]);
-        $line($s, ['A/c. No.  ', $value($data['charges_account'] ?? null), '  for charges and effect the foreign exchange remittance directly.'], ['spaceAfter' => 120]);
+        $line($s, ['A/c. No.  ', $value($charges ? $charges->account_no.' ('.$charges->bank_name.($charges->branch ? ', '.$charges->branch : '').')' : null), '  for charges and effect the foreign exchange remittance directly.'], ['spaceAfter' => 120]);
         $table($s, collect([
             'Beneficiary Name' => $value($data['beneficiary_name']),
             'Beneficiary Address' => $value($data['address'] ?? null),
