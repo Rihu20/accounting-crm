@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Models\BankAccount;
 use App\Models\Invoice;
 use App\Models\PaymentGateway;
+use App\Models\Setting;
 use App\Services\InvoiceFormat;
 use App\Services\InvoiceRegisterService;
 use App\Services\InvoiceService;
@@ -49,6 +50,11 @@ class InvoiceResource extends CrmResource
     protected static ?string $modelLabel = 'invoice';
 
     protected static ?string $recordTitleAttribute = 'number';
+
+    public static function getNavigationBadgeTooltip(): ?string
+    {
+        return auth()->user()?->allowed('accounting.tax.approve') ? 'Waiting for your approval' : 'Ready for a tax invoice';
+    }
 
     public static function getGloballySearchableAttributes(): array
     {
@@ -225,7 +231,11 @@ class InvoiceResource extends CrmResource
                     ->visible(fn (Invoice $record) => auth()->user()->allowed('payments.view') && $record->doc_type === 'proforma' && in_array($record->status, ['Sent', 'Partially received']))
                     ->modalHeading(fn (Invoice $record) => 'Reminder for '.$record->number)->modalWidth('2xl')
                     ->modalContent(fn (Invoice $record) => view('filament.parts.reminder', ['invoice' => $record, 'text' => self::reminderText($record)]))
-                    ->modalSubmitAction(false)->modalCancelActionLabel('Close'),
+                    ->modalSubmitActionLabel('Mark reminder sent')->modalCancelActionLabel('Close')
+                    ->action(function (Invoice $record): void {
+                        app(InvoiceService::class)->markReminderSent($record, auth()->user());
+                        Notification::make()->title('Reminder recorded')->success()->send();
+                    }),
                 Action::make('pdf')->label('View PDF')->icon('heroicon-o-document-arrow-down')->url(fn ($record) => url('/crm/invoices/'.$record->id.'/pdf'))->openUrlInNewTab(),
 
                 // ---------- Paralegal: requests only ----------
@@ -301,7 +311,7 @@ class InvoiceResource extends CrmResource
         $bank = $record->bankAccount;
         $days = (int) ($record->sent_at ?? $record->invoice_date)->copy()->startOfDay()->diffInDays(today());
         $matters = $record->items->pluck('our_ref')->filter()->unique()->implode(', ');
-        $company = \App\Models\Setting::get('signature_company_name', 'AnalystIP');
+        $company = Setting::get('signature_company_name', 'AnalystIP');
 
         return "Subject: Payment reminder – {$record->number}".($matters ? " ({$matters})" : '')."\n\n"
             .'Dear '.($record->client->contact_person ?: 'Sir/Madam').",\n\n"
@@ -359,7 +369,7 @@ class InvoiceResource extends CrmResource
         return Action::make($type.'_note')->label('Raise '.$label)->icon($type === 'credit' ? 'heroicon-o-minus-circle' : 'heroicon-o-plus-circle')
             ->visible(fn (Invoice $record) => auth()->user()->allowed('accounting.notes.create') && $record->doc_type === 'tax' && $record->status === 'Issued')
             ->modalHeading(fn (Invoice $record) => $label.' against '.$record->number)
-            ->modalDescription(fn (Invoice $record) => $record->client->client_type === 'Indian' ? 'GST @ '.\App\Models\Setting::get('gst_rate', '18').'% is added automatically on the taxable part (CGST+SGST or IGST by place of supply).' : 'Export invoice – no GST.')
+            ->modalDescription(fn (Invoice $record) => $record->client->client_type === 'Indian' ? 'GST @ '.Setting::get('gst_rate', '18').'% is added automatically on the taxable part (CGST+SGST or IGST by place of supply).' : 'Export invoice – no GST.')
             ->schema([
                 DatePicker::make('note_date')->label('Date')->default(today())->required(),
                 TextInput::make('taxable_amount')->label(fn (Invoice $record) => $record->client->client_type === 'Indian' ? 'Professional fees (taxable) – '.$record->currency : 'Professional fees – '.$record->currency)->numeric()->minValue(0)->default(0),

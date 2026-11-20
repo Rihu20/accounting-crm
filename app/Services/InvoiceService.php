@@ -107,6 +107,15 @@ class InvoiceService
         return Setting::get($series.'_prefix', $defaultPrefix).substr((string) $year, -2).str_pad((string) $next, (int) Setting::get('sequence_padding', 4), '0', STR_PAD_LEFT);
     }
 
+    /** Records that a payment reminder was sent for an unpaid proforma, so the follow-up list knows when the next one is due. */
+    public function markReminderSent(Invoice $invoice, User $actor): void
+    {
+        abort_unless($actor->allowed('payments.view'), 403);
+        abort_unless($invoice->doc_type === 'proforma' && in_array($invoice->status, ['Sent', 'Partially received'], true), 422, 'Reminders are only for proformas that are not fully paid.');
+        $invoice->forceFill(['last_reminder_on' => today()->toDateString(), 'reminder_count' => (int) $invoice->reminder_count + 1])->saveQuietly();
+        activity()->causedBy($actor)->performedOn($invoice)->withProperties(['reminder' => $invoice->reminder_count])->log('Payment reminder sent');
+    }
+
     public function send(Invoice $invoice): Invoice
     {
         abort_unless(auth()->user()?->allowed('accounting.invoices.finalise'), 403);

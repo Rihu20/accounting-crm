@@ -55,6 +55,22 @@
             <a href="{{ $exp }}">Expense register →</a></div>
     </div>
 
+    @if($user->allowed('payments.view'))
+        @php($due = $d->followUpsDue()) @php($rule = $d->followUpRule())
+        <section class="crm-card" style="margin-top:16px">
+            <h3>Follow up today <span class="crm-badge {{ $due->isEmpty() ? 'green' : 'red' }}">{{ $due->count() }}{{ $due->count() >= 8 ? '+' : '' }} due</span></h3>
+            <p class="crm-muted">First reminder {{ $rule['first'] }} days after the proforma is sent, then every {{ $rule['repeat'] }} days until it is paid (change this in Settings).</p>
+            @forelse($due as $i)
+                <div class="crm-row">
+                    <span><strong>{{ $i->client->name }}</strong><small>{{ $i->number }} · sent {{ $days($i->sent_at) }} days ago · {{ $i->last_reminder_on ? 'last reminder '.$i->last_reminder_on->format('d.m.Y').' ('.$i->reminder_count.' sent)' : 'no reminder yet' }}</small></span>
+                    <span class="amt">{{ $fmt($i->outstandingAmount(), $i->currency) }}<br>{{ ($this->reminderAction)(['invoice' => $i->id]) }}</span>
+                </div>
+            @empty
+                <div class="crm-empty"><span>✓</span><strong>No reminder due today</strong>Every unpaid proforma is either recent or was reminded lately.</div>
+            @endforelse
+        </section>
+    @endif
+
     <div class="crm-split">
         <section class="crm-card">
             <h3>Waiting for your approval <span class="crm-badge {{ array_sum($ap) ? 'red' : 'green' }}">{{ array_sum($ap) }} open</span></h3>

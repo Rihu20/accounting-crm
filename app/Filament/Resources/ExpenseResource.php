@@ -43,6 +43,28 @@ class ExpenseResource extends CrmResource
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-receipt-percent';
 
+    /** Payment requests from paralegals waiting for a decision. */
+    public static function getNavigationBadge(): ?string
+    {
+        $user = auth()->user();
+        if (! $user || ! PortalWorkflow::canReviewRequests($user)) {
+            return null;
+        }
+        $count = Expense::where('status', 'Unpaid')->where('payment_request->status', 'Pending')->count();
+
+        return $count ? (string) $count : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'danger';
+    }
+
+    public static function getNavigationBadgeTooltip(): ?string
+    {
+        return 'Payment requests to review';
+    }
+
     public static function canViewAny(): bool
     {
         return (bool) (auth()->user()?->allowed('accounting.expenses.view_all') || auth()->user()?->allowed('accounting.expenses.view_paralegal'));

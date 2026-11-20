@@ -100,6 +100,27 @@ class DashboardService
             ->orderByRaw('due_date is null')->orderBy('due_date')->orderBy('invoice_date')->limit($limit)->get();
     }
 
+    /**
+     * Unpaid proformas due for a payment reminder today: the first one after the follow-up days from sending,
+     * then again every repeat interval after the last reminder (both in Settings).
+     */
+    public function followUpsDue(?int $limit = 8): Collection
+    {
+        $first = max(1, (int) Setting::get('followup_days', 15));
+        $repeat = max(1, (int) Setting::get('followup_repeat_days', 7));
+
+        return Invoice::with(['client', 'payments'])->where('doc_type', 'proforma')->whereIn('status', ['Sent', 'Partially received'])
+            ->where('sent_at', '<=', now()->subDays($first))
+            ->where(fn ($q) => $q->whereNull('last_reminder_on')->orWhereDate('last_reminder_on', '<=', today()->subDays($repeat)))
+            ->orderBy('sent_at')->when($limit, fn ($q) => $q->limit($limit))->get();
+    }
+
+    /** @return array{first: int, repeat: int} */
+    public function followUpRule(): array
+    {
+        return ['first' => max(1, (int) Setting::get('followup_days', 15)), 'repeat' => max(1, (int) Setting::get('followup_repeat_days', 7))];
+    }
+
     /** Paid foreign remittances that need Form 15CA/CB and whose form is not marked Filed. */
     public function pendingRemittanceForms(int $limit = 6): Collection
     {
