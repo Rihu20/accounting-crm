@@ -2,8 +2,12 @@
 
 namespace App\Services;
 
+use App\Models\BankAccount;
 use App\Models\Client;
 use App\Models\Expense;
+use App\Models\Invoice;
+use App\Models\Setting;
+use Illuminate\Support\Carbon;
 
 class MasterDataChecks
 {
@@ -65,6 +69,42 @@ class MasterDataChecks
                 }
             }
         });
+
+        return $out;
+    }
+
+    /**
+     * Invoice, LUT and bank details that would make a GST return, an export invoice or a payment wrong.
+     *
+     * @return array<int, array{area: string, record: string, problem: string}>
+     */
+    public function accountsChecks(): array
+    {
+        $out = [];
+        Invoice::where('doc_type', 'tax')->where('currency', '!=', 'INR')->where('status', '!=', 'Cancelled')->whereNull('inr_exchange_rate')->orderBy('invoice_date')->limit(50)
+            ->get(['id', 'number', 'currency'])->each(function (Invoice $i) use (&$out): void {
+                $out[] = ['area' => 'Invoice', 'record' => (string) $i->number, 'problem' => 'INR exchange rate missing – needed for the GSTR-1 export value and the e-invoice (Register details)'];
+            });
+        Invoice::where('status', 'Draft')->where('created_at', '<=', now()->subDays(7))->orderBy('created_at')->limit(50)
+            ->get(['id', 'created_at'])->each(function (Invoice $i) use (&$out): void {
+                $out[] = ['area' => 'Invoice', 'record' => 'Draft #'.$i->id, 'problem' => 'Draft older than 7 days ('.$i->created_at->format('d.m.Y').') – finalise or delete it'];
+            });
+        $exports = Client::where('client_type', '!=', 'Indian')->exists();
+        $arn = trim((string) Setting::get('lut_arn', ''));
+        $validUpto = Setting::get('lut_valid_upto');
+        if ($exports && $arn === '') {
+            $out[] = ['area' => 'Setting', 'record' => 'LUT ARN', 'problem' => 'LUT ARN is not set – export invoices print the LUT line without it'];
+        }
+        if ($exports && filled($validUpto)) {
+            $until = Carbon::parse($validUpto);
+            if ($until->lt(today()->addDays(60))) {
+                $out[] = ['area' => 'Setting', 'record' => 'LUT valid up to', 'problem' => $until->isPast() ? 'LUT expired on '.$until->format('d.m.Y').' – file a new LUT' : 'LUT expires on '.$until->format('d.m.Y').' – renew it in time'];
+            }
+        }
+        BankAccount::where('is_active', true)->where(fn ($q) => $q->whereNull('account_no')->orWhere('account_no', ''))->get(['bank_name', 'currency'])
+            ->each(function (BankAccount $b) use (&$out): void {
+                $out[] = ['area' => 'Bank', 'record' => $b->bank_name.' '.$b->currency, 'problem' => 'Account number missing – printed blank on invoices'];
+            });
 
         return $out;
     }

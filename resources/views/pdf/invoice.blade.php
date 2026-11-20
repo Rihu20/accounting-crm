@@ -58,6 +58,7 @@ td,th{vertical-align:top;padding:0}
 .gen{margin:14px 30px 0;padding-top:8px;border-top:1px solid #eee6e5;font-size:7.5px;color:#8a8080;text-align:center}
 .stamp{position:absolute;left:300px;top:96px;border:2px solid #2e7d32;color:#2e7d32;font-weight:bold;font-size:18px;letter-spacing:4px;padding:3px 12px;transform:rotate(-12deg);opacity:.55;border-radius:5px}
 .cont td{padding:16px 0 10px}
+.einv{border:1px solid #eee6e5;border-radius:8px}.einv td{padding:8px 10px;vertical-align:middle}.einv table td{padding:0 18px 0 0}
 .compact .totals td{padding:2px 0;font-size:8px}.compact .pay{padding:7px 10px}.compact .br td{padding:1px 0}
 </style></head><body>
 @php
@@ -142,6 +143,14 @@ td,th{vertical-align:top;padding:0}
         @elseif($invoice->gateway)<div class="h">Pay through {{ $invoice->gateway->name }}</div><div class="muted">{{ $invoice->gateway->instructions }}</div>
         @else<div class="h">Payment</div><div class="muted">Payment instructions pending.</div>@endif
     </div>
+    @if($isTax && $invoice->irn)
+        @php($qr = app(\App\Services\EInvoiceService::class)->qrImage($invoice))
+        <div style="padding:12px 30px 0"><table class="einv"><tr>
+            @if($qr)<td style="width:96px"><img src="{{ $qr }}" style="width:88px;height:88px"></td>@endif
+            <td><div class="h">e-Invoice (GST IRP)</div><span class="lbl">IRN</span><div style="font-family:DejaVu Sans Mono,monospace;font-size:8px;overflow-wrap:break-word">{{ $invoice->irn }}</div>
+                <table style="margin-top:6px"><tr><td><span class="lbl">Ack No.</span><b>{{ $invoice->irn_ack_no }}</b></td><td><span class="lbl">Ack Date</span><b>{{ $invoice->irn_ack_date?->format('d.m.Y H:i') }}</b></td></tr></table></td>
+        </tr></table></div>
+    @endif
     <table class="foot"><tr>
         <td class="terms" style="padding-left:30px;padding-right:24px"><div class="h">Terms &amp; conditions</div>{!! nl2br(e($settings['terms'] ?? '')) !!}</td>
         <td class="sign" style="padding-right:30px">@if($signature ?? null)<img src="{{ $signature }}">@else<div class="sigsp"></div>@endif<div class="sigline">For {{ $settings['signature_company_name'] ?? 'AnalystIP' }}<br>Authorized Signatory</div></td>

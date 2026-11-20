@@ -116,6 +116,52 @@ class InvoiceService
         activity()->causedBy($actor)->performedOn($invoice)->withProperties(['reminder' => $invoice->reminder_count])->log('Payment reminder sent');
     }
 
+    /**
+     * Cancels a finalised proforma that nothing has been paid on. The number stays used (the series has no gaps)
+     * and nothing is deleted; a corrected one is made with "Copy to new draft".
+     */
+    public function cancel(Invoice $invoice, string $reason, User $actor): void
+    {
+        abort_unless($actor->allowed('accounting.invoices.finalise'), 403);
+        abort_if(trim($reason) === '', 422, 'Give a reason.');
+        DB::transaction(function () use ($invoice, $reason, $actor): void {
+            $current = Invoice::lockForUpdate()->findOrFail($invoice->id);
+            abort_unless($current->doc_type === 'proforma' && $current->status === 'Sent', 422, 'Only a sent proforma without payments can be cancelled.');
+            abort_if(bccomp($current->registerPaymentTotal(), '0', 2) > 0 || ($current->payment_initiation['status'] ?? null) === 'Pending', 422, 'A payment is recorded or reported on this proforma. Reverse it first.');
+            $current->forceFill(['status' => 'Cancelled', 'cancel_reason' => trim($reason), 'cancelled_at' => now()])->saveQuietly();
+            activity()->causedBy($actor)->performedOn($current)->withProperties(['reason' => trim($reason)])->log('Proforma cancelled');
+        });
+    }
+
+    /** A new draft proforma with the same client, currency, layout, bank and fees, dated today; the original is unchanged. */
+    public function copyToDraft(Invoice $invoice, User $actor): Invoice
+    {
+        abort_unless($actor->is_active && $actor->allowed('accounting.invoices.create'), 403);
+
+        return DB::transaction(function () use ($invoice, $actor): Invoice {
+            $source = $invoice->doc_type === 'tax' && $invoice->proforma ? $invoice->proforma : $invoice;
+            $copy = $source->replicate(['number', 'proforma_id', 'received_on', 'sent_at', 'pdf_path', 'payment_status', 'payment_initiation', 'tax_authorization', 'billing_details', 'register_user', 'inr_exchange_rate', 'sender_name', 'register_comment', 'tds_receivable', 'payment_intimation_date', 'payment_informed_by', 'last_reminder_on', 'reminder_count', 'irn', 'irn_ack_no', 'irn_ack_date', 'irn_signed_qr', 'cancel_reason', 'cancelled_at', 'client_sent_at', 'client_sent_to', 'lock_version']);
+            $copy->forceFill(['doc_type' => 'proforma', 'status' => 'Draft', 'invoice_date' => today(), 'due_date' => today()->addDays((int) ($source->payment_term_days ?: 15)), 'created_by' => $actor->id, 'copied_from_id' => $source->id, 'word_upload_id' => null])->save();
+            foreach ($source->items()->orderBy('sort_order')->get() as $item) {
+                $copy->items()->create($item->replicate(['invoice_id'])->toArray());
+            }
+            $this->recalculate($copy);
+            activity()->causedBy($actor)->performedOn($copy)->withProperties(['from' => $source->number ?? 'draft #'.$source->id])->log('Draft copied');
+
+            return $copy->fresh();
+        });
+    }
+
+    /** Records that a finalised invoice was emailed to the client. */
+    public function markSentToClient(Invoice $invoice, string $to, User $actor): void
+    {
+        abort_unless($actor->allowed('payments.view') || $actor->allowed('accounting.invoices.create'), 403);
+        abort_if($invoice->number === null || in_array($invoice->status, ['Draft', 'Cancelled'], true), 422, 'Only a finalised invoice can be sent to the client.');
+        Validator::make(['to' => $to], ['to' => 'required|string|max:500'])->validate();
+        $invoice->forceFill(['client_sent_at' => now(), 'client_sent_to' => trim($to)])->saveQuietly();
+        activity()->causedBy($actor)->performedOn($invoice)->withProperties(['to' => trim($to)])->log('Invoice sent to client');
+    }
+
     public function send(Invoice $invoice): Invoice
     {
         abort_unless(auth()->user()?->allowed('accounting.invoices.finalise'), 403);

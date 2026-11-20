@@ -6,6 +6,7 @@ use App\Models\BankAccount;
 use App\Models\Invoice;
 use App\Models\PaymentGateway;
 use App\Models\Setting;
+use App\Services\EInvoiceService;
 use App\Services\InvoiceFormat;
 use App\Services\InvoiceRegisterService;
 use App\Services\InvoiceService;
@@ -18,6 +19,7 @@ use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
@@ -33,6 +35,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class InvoiceResource extends CrmResource
@@ -214,6 +217,9 @@ class InvoiceResource extends CrmResource
             TextColumn::make('client.gstin')->label('Client GSTIN')->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('register_comment')->label('Comment')->limit(60)->wrap()->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('invoice_layout')->label('Format')->formatStateUsing(fn ($state) => InvoiceFormat::LABELS[$state] ?? $state)->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('client_sent_at')->label('Sent to client')->dateTime('d.m.Y')->placeholder('-')->description(fn (Invoice $record) => $record->client_sent_to)->toggleable(),
+            TextColumn::make('irn')->label('e-Invoice')->state(fn (Invoice $record) => $record->irn ? 'IRN '.substr($record->irn, 0, 8).'…' : null)->badge()->color('success')->placeholder('-')->description(fn (Invoice $record) => $record->irn_ack_no ? 'Ack '.$record->irn_ack_no : null)->toggleable(isToggledHiddenByDefault: true),
+            TextColumn::make('cancel_reason')->label('Cancel reason')->placeholder('-')->wrap()->limit(60)->toggleable(isToggledHiddenByDefault: true),
         ])->filters([
             SelectFilter::make('doc_type')->label('Type')->options(['proforma' => 'Proforma', 'tax' => 'Tax invoice']),
             SelectFilter::make('status')->options(fn () => self::seesPayments()
@@ -237,6 +243,51 @@ class InvoiceResource extends CrmResource
                         Notification::make()->title('Reminder recorded')->success()->send();
                     }),
                 Action::make('pdf')->label('View PDF')->icon('heroicon-o-document-arrow-down')->url(fn ($record) => url('/crm/invoices/'.$record->id.'/pdf'))->openUrlInNewTab(),
+                self::sendToClientAction(),
+                Action::make('copy_draft')->label('Copy to new draft')->icon('heroicon-o-document-duplicate')
+                    ->visible(fn (Invoice $record) => auth()->user()->allowed('accounting.invoices.create') && $record->number !== null)
+                    ->requiresConfirmation()->modalDescription('A new draft proforma with the same client, fees and bank, dated today. This invoice stays as it is.')
+                    ->action(function (Invoice $record, Action $action) {
+                        self::explainRefusal($action, function () use ($record) {
+                            $copy = app(InvoiceService::class)->copyToDraft($record, auth()->user());
+                            Notification::make()->title('Draft #'.$copy->id.' created')->body('Find it under Drafts, edit it, then finalise.')->success()->send();
+                        });
+                    }),
+                Action::make('cancel_proforma')->label('Cancel proforma')->icon('heroicon-o-x-circle')->color('danger')
+                    ->visible(fn (Invoice $record) => auth()->user()->allowed('accounting.invoices.finalise') && $record->doc_type === 'proforma' && $record->status === 'Sent')
+                    ->modalDescription('The number stays used (the series has no gaps) and nothing is deleted: the proforma is marked Cancelled. Use “Copy to new draft” to issue a corrected one.')
+                    ->schema([Textarea::make('reason')->label('Reason')->required()->maxLength(1000)])
+                    ->action(function (Invoice $record, array $data, Action $action) {
+                        self::explainRefusal($action, fn () => app(InvoiceService::class)->cancel($record, $data['reason'], auth()->user()));
+                        Notification::make()->title('Proforma '.$record->number.' cancelled')->success()->send();
+                    }),
+                Action::make('einvoice_json')->label('e-Invoice JSON (for IRP)')->icon('heroicon-o-code-bracket-square')
+                    ->visible(fn (Invoice $record) => EInvoiceService::canUse($record, auth()->user()) && blank($record->irn))
+                    ->action(function (Invoice $record, Action $action) {
+                        try {
+                            $json = app(EInvoiceService::class)->json($record);
+                        } catch (ValidationException $e) {
+                            Notification::make()->title('The e-invoice cannot be made yet')->body(implode(' ', $e->validator->errors()->all()))->danger()->persistent()->send();
+                            $action->halt();
+                        }
+
+                        return response()->streamDownload(fn () => print ($json), 'einvoice-'.$record->number.'.json', ['Content-Type' => 'application/json']);
+                    }),
+                Action::make('einvoice_record')->label(fn (Invoice $record) => $record->irn ? 'e-Invoice: IRN details' : 'Record IRN from the IRP')->icon('heroicon-o-qr-code')
+                    ->visible(fn (Invoice $record) => EInvoiceService::canUse($record, auth()->user()))
+                    ->modalDescription('Upload the e-Invoice JSON on the Invoice Registration Portal (einvoice1.gst.gov.in). Then paste the response JSON it gives back, or type the IRN, acknowledgement and signed QR. The QR and IRN are then printed on this tax invoice.')
+                    ->fillForm(fn (Invoice $record) => ['irn' => $record->irn, 'ack_no' => $record->irn_ack_no, 'ack_date' => $record->irn_ack_date, 'signed_qr' => $record->irn_signed_qr])
+                    ->schema([
+                        Textarea::make('response')->label('Response JSON from the IRP (optional)')->rows(4)->helperText('Paste it as it is. The fields below are then taken from it.'),
+                        TextInput::make('irn')->label('IRN (64 characters)')->maxLength(64),
+                        TextInput::make('ack_no')->label('Ack No.')->maxLength(30),
+                        DateTimePicker::make('ack_date')->label('Ack Date')->seconds(false),
+                        Textarea::make('signed_qr')->label('Signed QR code (text)')->rows(3)->helperText('Without it the QR on the invoice holds only the IRN.'),
+                    ])
+                    ->action(function (Invoice $record, array $data) {
+                        app(EInvoiceService::class)->record($record, $data, auth()->user());
+                        Notification::make()->title('IRN recorded')->body('The QR and IRN are printed on the tax invoice.')->success()->send();
+                    }),
 
                 // ---------- Paralegal: requests only ----------
                 Action::make('report_payment')->label('Client has initiated payment')->icon('heroicon-o-megaphone')->color('warning')
@@ -303,6 +354,59 @@ class InvoiceResource extends CrmResource
             ])->tooltip('Actions')->icon('heroicon-m-ellipsis-vertical')->iconButton()->color('gray'),
         ], position: RecordActionsPosition::BeforeColumns)->defaultSort('created_at', 'desc')->defaultPaginationPageOption(25)
             ->emptyStateHeading('No invoices here yet')->emptyStateIcon('heroicon-o-document-text');
+    }
+
+    /** Email a finalised invoice to the client: the text is ready, the mail app opens with it, and sending is recorded. */
+    public static function sendToClientAction(): Action
+    {
+        return Action::make('send_client')->label(fn (Invoice $record) => 'Send to client'.($record->client_sent_at ? ' (sent '.$record->client_sent_at->format('d.m.Y').')' : ''))->icon('heroicon-o-paper-airplane')
+            ->visible(fn (Invoice $record) => (auth()->user()->allowed('payments.view') || auth()->user()->allowed('accounting.invoices.create')) && $record->number !== null && ! in_array($record->status, ['Draft', 'Cancelled'], true))
+            ->modalHeading(fn (Invoice $record) => 'Send '.$record->number.' to the client')->modalWidth('3xl')
+            ->modalDescription('Attach the PDF (View PDF → download), send the email from your mail, then press “Mark as sent” so the CRM records it.')
+            ->fillForm(fn (Invoice $record) => self::clientEmail($record))
+            ->schema([
+                TextInput::make('to')->label('To')->required()->helperText('Client emails from the master. Add more with commas.'),
+                TextInput::make('cc')->label('CC'),
+                TextInput::make('subject')->required(),
+                Textarea::make('message')->rows(10),
+            ])
+            ->extraModalFooterActions(fn (Invoice $record) => [
+                Action::make('open_mail')->label('Open in email app')->icon('heroicon-o-envelope')->color('gray')->url(self::mailtoUrl($record))->openUrlInNewTab(),
+                Action::make('open_pdf')->label('PDF')->icon('heroicon-o-document-arrow-down')->color('gray')->url(url('/crm/invoices/'.$record->id.'/pdf'))->openUrlInNewTab(),
+            ])
+            ->modalSubmitActionLabel('Mark as sent')
+            ->action(function (Invoice $record, array $data, Action $action) {
+                self::explainRefusal($action, fn () => app(InvoiceService::class)->markSentToClient($record, $data['to'], auth()->user()));
+                Notification::make()->title('Recorded as sent to '.$data['to'])->success()->send();
+            });
+    }
+
+    /** @return array{to: string, cc: string, subject: string, message: string} */
+    public static function clientEmail(Invoice $record): array
+    {
+        $record->loadMissing(['client', 'items']);
+        $client = $record->billingClient();
+        $kind = $record->doc_type === 'tax' ? 'Tax invoice' : 'Proforma invoice';
+        $matters = $record->items->pluck('our_ref')->filter()->unique()->implode(', ');
+        $company = Setting::get('signature_company_name', 'AnalystIP');
+
+        return [
+            'to' => implode(', ', array_filter([$client->email_1, $client->email_2])),
+            'cc' => (string) Setting::get('company_email', ''),
+            'subject' => "{$kind} {$record->number}".($matters ? " – {$matters}" : " – {$client->name}"),
+            'message' => 'Dear '.($client->contact_person ?: 'Sir/Madam').",\n\n"
+                .'Please find attached our '.strtolower($kind)." {$record->number} dated ".$record->invoice_date->format('d M Y').' for '.Money::format((string) $record->grand_total, $record->currency).'.'
+                .($record->doc_type === 'proforma' ? "\n\nPayment is due by ".$record->due_date->format('d M Y').'. Kindly remit choosing OUR charges so that the full amount is received, and share the remittance advice once paid.' : '')
+                ."\n\nThank you,\n{$company} – Accounts",
+        ];
+    }
+
+    public static function mailtoUrl(Invoice $record): string
+    {
+        $mail = self::clientEmail($record);
+        $query = http_build_query(array_filter(['cc' => $mail['cc'], 'subject' => $mail['subject'], 'body' => $mail['message']]), '', '&', PHP_QUERY_RFC3986);
+
+        return 'mailto:'.str_replace(' ', '', $mail['to']).'?'.$query;
     }
 
     public static function reminderText(Invoice $record): string

@@ -24,6 +24,16 @@
             </section>
         @endforeach
     </div>
+    @php($accounts = app(\App\Services\MasterDataChecks::class)->accountsChecks())
+    <section class="crm-card">
+        <h3>Invoices, LUT and banks <span class="crm-muted">({{ count($accounts) }})</span></h3>
+        <p>Details that would make a GST return, an export invoice or a payment instruction wrong.</p>
+        @forelse($accounts as $check)
+            <div class="crm-row"><span><strong>{{ $check['area'] }} · {{ $check['record'] }}</strong><small>{{ $check['problem'] }}</small></span></div>
+        @empty
+            <p>✓ No issues found in this check.</p>
+        @endforelse
+    </section>
     @php($bills = app(\App\Services\MasterDataChecks::class)->indianBills())
     <section class="crm-card">
         <h3>Indian vendor bills to review <span class="crm-muted">({{ $bills['count'] }})</span></h3>
